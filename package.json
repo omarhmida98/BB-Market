@@ -1,0 +1,35 @@
+{
+  "name": "sred-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "client",
+    "server",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev -w server\" \"npm run dev -w client\"",
+    "build": "npm run build -w server && npm run build -w client",
+    "start": "npm run start -w server",
+    "server:dev": "npm run dev -w server",
+    "client:dev": "npm run dev -w client",
+        "db:push": "npm run db:push -w server",
+        "db:generate": "npm run db:generate -w server",
+        "db:generate:pg": "npm run db:generate:pg -w server",
+        "db:migrate": "npm run db:migrate -w server",
+        "db:baseline": "npm run db:baseline -w server",
+        "set-password": "npm run set-password -w server",
+    "test:auth": "npm run test:auth -w server"
+  },
+  "devDependencies": {
+    "@types/nodemailer": "^7.0.12",
+    "concurrently": "^9.1.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.714.0",
+    "@aws-sdk/lib-storage": "^3.714.0",
+    "memorystore": "^1.6.7",
+    "nodemailer": "^9.0.3"
+  }
+}

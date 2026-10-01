@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+
+    "module": "ESNext",
+    "moduleResolution": "Node",
+
+    "outDir": "./dist",
+    "rootDir": "..",
+
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["../shared/*"],
+      "shared/*": ["../shared/*"]
+    },
+
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+
+  "include": [
+    "**/*.ts",
+    "../shared/**/*.ts"
+  ],
+
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
+}

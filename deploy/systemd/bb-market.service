@@ -1,0 +1,93 @@
+# =============================================================================
+# B&B Market - systemd service (OVHcloud VPS)
+# =============================================================================
+# Install:
+#   sudo useradd --system --home /var/www/bb-market --shell /usr/sbin/nologin bbmarket
+#   sudo cp deploy/systemd/bb-market.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now bb-market
+#
+# Inspect:
+#   systemctl status bb-market
+#   journalctl -u bb-market -f
+#
+# IMPORTANT: the service does NOT pass secrets via Environment=. Secrets live in
+# /var/www/bb-market/.env.prod, which is mode 600 and owned by the service user.
+# server/env.ts loads it when NODE_ENV=production. Keeping secrets out of the
+# unit file means `systemctl cat` is safe to paste into a support ticket.
+# =============================================================================
+
+[Unit]
+Description=B&B Market Node/Express application
+Documentation=file:///var/www/bb-market/AGENTS.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bbmarket
+Group=bbmarket
+# Build from the repository root (`npm run build` at the root), which is where
+# the dist/ layout that deploy/nginx/bb-market.conf serves comes from.
+WorkingDirectory=/var/www/bb-market/server
+
+# --- Secrets and mode --------------------------------------------------------
+# server/env.ts reads .env.prod because NODE_ENV=production. Make sure this
+# file exists and is readable only by the service user:
+#   sudo chown bbmarket:bbmarket /var/www/bb-market/.env.prod
+#   sudo chmod 600 /var/www/bb-market/.env.prod
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=5000
+
+# Run the built server. `npm start` (i.e. server/start-prod.js) does the same
+# thing and additionally defaults NODE_ENV to production when it is not already
+# set, so the unit file's explicit Environment= line below is what guarantees it.
+ExecStart=/usr/bin/node start-prod.js
+WorkingDirectory=/var/www/bb-market/server
+
+# --- Restart policy ----------------------------------------------------------
+# Always restart on any exit, including a clean one, and back off so a
+# repeatedly crashing app does not spin the CPU.
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# --- Graceful shutdown -------------------------------------------------------
+# SIGTERM lets Node close the HTTP server and drain in-flight requests.
+# systemd waits StopSec seconds before sending SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# --- Hardening ---------------------------------------------------------------
+# The app only needs to read its own directory and write to public/uploads.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+# Only the essentials: node needs to read the world and speak TCP.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# With ProtectSystem=strict the whole filesystem is read-only, so uploads
+# would fail. Whitelist the one writable path. It matches the default
+# UPLOADS_DIR (<checkout root>/public/uploads) and deliberately does NOT
+# include dist/, which `npm run build` empties on every deploy.
+ReadWritePaths=/var/www/bb-market/public/uploads
+
+# --- Logging -----------------------------------------------------------------
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bb-market
+
+# --- Resource limits ---------------------------------------------------------
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

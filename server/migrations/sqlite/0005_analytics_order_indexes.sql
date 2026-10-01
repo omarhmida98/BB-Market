@@ -1,0 +1,19 @@
+-- Analytics read index.
+--
+-- Every dashboard query filters orders by a `created_at` range and excludes
+-- cancelled rows. `EXPLAIN QUERY PLAN` on a 5,000-order fixture reported `SCAN o`
+-- for the daily, topProducts and topCategories aggregates, meaning the range
+-- bounds were evaluated only after the whole table had been read. With this index
+-- the same plans report
+-- `SEARCH o USING INDEX idx_orders_created_at (created_at>? AND created_at<?)`.
+--
+-- The index deliberately does NOT lead with `status`. A composite
+-- (status, created_at) was tried first and the planner never chose it: the
+-- predicate is `status <> 'cancelled'`, and a btree seek needs an equality or
+-- range bound on the leading column, which a `<>` does not give. Leading with
+-- status would have produced a covering-looking index that only the optimiser
+-- could reject, so it was removed rather than shipped.
+--
+-- The status filter is still evaluated per row of the range, which is cheap: the
+-- range, not the status, is what narrows the scan.
+CREATE INDEX `idx_orders_created_at` ON `orders` (`created_at`);

@@ -1,0 +1,21 @@
+node_modules
+dist
+.DS_Store
+server/public
+vite.config.ts.*
+*.tar.gz
+.env
+.env.*
+!.env.example
+shared/*.js
+
+# Throwaway SQLite databases and journals created by the test/smoke scripts.
+# `.env.*` above already covers their generated env files.
+server/*_rt.db
+server/*_rt.db-journal
+server/*_rt.db-wal
+server/*_rt.db-shm
+server/smoke_ui.db
+server/smoke_ui.db-journal
+server/smoke_ui.db-wal
+server/smoke_ui.db-shm
