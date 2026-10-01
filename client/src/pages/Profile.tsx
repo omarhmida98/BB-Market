@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -29,6 +30,7 @@ export default function Profile() {
   const { user, isLoading: loadingUser } = useAuth();
   const [, setLocation] = useLocation();
   const { toast } = useToast();
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
 
   // Profile form state
@@ -63,10 +65,10 @@ export default function Profile() {
     },
     onSuccess: (updatedUser) => {
       queryClient.setQueryData(["/api/user"], updatedUser);
-      toast({ title: "Profil mis à jour avec succès" });
+      toast({ title: t("profile.toast_profile_updated", "Profil mis à jour avec succès") });
     },
     onError: (error: Error) => {
-      toast({ variant: "destructive", title: "Erreur", description: error.message });
+      toast({ variant: "destructive", title: t("profile.error_title", "Erreur"), description: error.message });
     },
   });
 
@@ -76,14 +78,14 @@ export default function Profile() {
       await apiRequest("POST", "/api/user/change-password", data);
     },
     onSuccess: () => {
-      toast({ title: "Mot de passe modifié avec succès" });
+      toast({ title: t("profile.toast_password_changed", "Mot de passe modifié avec succès") });
       setPasswordDialogOpen(false);
       setOldPassword("");
       setNewPassword("");
       setConfirmPassword("");
     },
     onError: (error: Error) => {
-      toast({ variant: "destructive", title: "Erreur", description: error.message });
+      toast({ variant: "destructive", title: t("profile.error_title", "Erreur"), description: error.message });
     },
   });
 
@@ -93,7 +95,7 @@ export default function Profile() {
       await apiRequest("POST", "/api/user/set-password", data);
     },
     onSuccess: () => {
-      toast({ title: "Mot de passe créé avec succès" });
+      toast({ title: t("profile.toast_password_created", "Mot de passe créé avec succès") });
       setPasswordDialogOpen(false);
       setNewPassword("");
       setConfirmPassword("");
@@ -101,7 +103,7 @@ export default function Profile() {
       queryClient.invalidateQueries({ queryKey: ["/api/user"] });
     },
     onError: (error: Error) => {
-      toast({ variant: "destructive", title: "Erreur", description: error.message });
+      toast({ variant: "destructive", title: t("profile.error_title", "Erreur"), description: error.message });
     },
   });
 
@@ -113,10 +115,10 @@ export default function Profile() {
   const handlePasswordChange = (e: React.FormEvent) => {
     e.preventDefault();
     if (newPassword !== confirmPassword) {
-      return toast({ variant: "destructive", title: "Erreur", description: "Les mots de passe ne correspondent pas" });
+      return toast({ variant: "destructive", title: t("profile.error_title", "Erreur"), description: t("profile.error_password_mismatch", "Les mots de passe ne correspondent pas") });
     }
     if (newPassword.length < 6) {
-      return toast({ variant: "destructive", title: "Erreur", description: "Le mot de passe doit contenir au moins 6 caractères" });
+      return toast({ variant: "destructive", title: t("profile.error_title", "Erreur"), description: t("profile.error_password_too_short", "Le mot de passe doit contenir au moins 6 caractères") });
     }
     
     if (isGoogleUser && !hasPassword) {
@@ -159,16 +161,16 @@ export default function Profile() {
               className="inline-flex items-center gap-2 text-blue-100 hover:text-white transition-colors mb-6 text-sm font-bold"
             >
               <ChevronLeft className="w-4 h-4" />
-              Retour à l'accueil
+              {t("profile.back_home", "Retour à l'accueil")}
             </button>
             <div className="flex items-center gap-6">
               <div className="w-16 h-16 rounded-2xl bg-white/20 flex items-center justify-center text-white">
                 <User className="w-8 h-8" />
               </div>
               <div>
-                <h1 className="text-4xl font-display font-bold mb-2">Mon Profil</h1>
+                <h1 className="text-4xl font-display font-bold mb-2">{t("profile.title", "Mon Profil")}</h1>
                 <p className="text-blue-100 text-lg">
-                  Gérez vos informations personnelles et votre mot de passe.
+                  {t("profile.subtitle", "Gérez vos informations personnelles et votre mot de passe.")}
                 </p>
               </div>
             </div>
@@ -199,10 +201,10 @@ export default function Profile() {
                 </div>
                 <div>
                   <CardTitle className="text-2xl font-display font-bold text-slate-900">
-                    Informations personnelles
+                    {t("profile.personal_info", "Informations personnelles")}
                   </CardTitle>
                   <CardDescription className="text-slate-500">
-                    Mettez à jour vos coordonnées
+                    {t("profile.personal_info_desc", "Mettez à jour vos coordonnées")}
                   </CardDescription>
                 </div>
               </div>
@@ -212,7 +214,7 @@ export default function Profile() {
                 <div className="grid gap-6 md:grid-cols-2">
                   {/* Username (read-only) */}
                   <div className="space-y-2">
-                    <Label className="text-slate-700 font-bold">Identifiant</Label>
+                    <Label className="text-slate-700 font-bold">{t("profile.username_label", "Identifiant")}</Label>
                     <div className="relative">
                       <User className="absolute start-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <Input
@@ -221,18 +223,18 @@ export default function Profile() {
                         className="ps-10 bg-slate-50 border-slate-200 text-slate-500 cursor-not-allowed"
                       />
                     </div>
-                    <p className="text-[11px] text-slate-400">L'identifiant ne peut pas être modifié</p>
+                    <p className="text-[11px] text-slate-400">{t("profile.username_locked", "L'identifiant ne peut pas être modifié")}</p>
                   </div>
 
                   {/* Full Name */}
                   <div className="space-y-2">
-                    <Label className="text-slate-700 font-bold">Nom complet</Label>
+                    <Label className="text-slate-700 font-bold">{t("profile.full_name_label", "Nom complet")}</Label>
                     <div className="relative">
                       <IdCard className="absolute start-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <Input
                         value={fullName}
                         onChange={(e) => setFullName(e.target.value)}
-                        placeholder="Votre nom complet"
+                        placeholder={t("profile.full_name_placeholder", "Votre nom complet")}
                         className="ps-10 h-12 bg-white border-slate-200 focus:ring-primary/20"
                       />
                     </div>
@@ -240,14 +242,14 @@ export default function Profile() {
 
                   {/* Email */}
                   <div className="space-y-2">
-                    <Label className="text-slate-700 font-bold">Email</Label>
+                    <Label className="text-slate-700 font-bold">{t("profile.email_label", "Email")}</Label>
                     <div className="relative">
                       <Mail className="absolute start-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <Input
                         type="email"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
-                        placeholder="votre@email.com"
+                        placeholder={t("profile.email_placeholder", "votre@email.com")}
                         className="ps-10 h-12 bg-white border-slate-200 focus:ring-primary/20"
                       />
                     </div>
@@ -255,14 +257,14 @@ export default function Profile() {
 
                   {/* Phone */}
                   <div className="space-y-2">
-                    <Label className="text-slate-700 font-bold">Téléphone</Label>
+                    <Label className="text-slate-700 font-bold">{t("profile.phone_label", "Téléphone")}</Label>
                     <div className="relative">
                       <Phone className="absolute start-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <Input
                         type="tel"
                         value={phone}
                         onChange={(e) => setPhone(e.target.value)}
-                        placeholder="+212 6 XX XX XX XX"
+                        placeholder={t("profile.phone_placeholder", "+216 -- --- ---")}
                         className="ps-10 h-12 bg-white border-slate-200 focus:ring-primary/20"
                       />
                     </div>
@@ -280,7 +282,7 @@ export default function Profile() {
                     ) : (
                       <Save className="w-5 h-5 me-2" />
                     )}
-                    Enregistrer les modifications
+                    {t("profile.save", "Enregistrer les modifications")}
                   </Button>
                 </div>
               </form>
@@ -303,10 +305,10 @@ export default function Profile() {
                   </div>
                   <div>
                     <CardTitle className="text-2xl font-display font-bold text-slate-900">
-                      Sécurité
+                      {t("profile.security", "Sécurité")}
                     </CardTitle>
                     <CardDescription className="text-slate-500">
-                      Modifiez votre mot de passe
+                      {t("profile.security_desc", "Modifiez votre mot de passe")}
                     </CardDescription>
                   </div>
                 </div>
@@ -318,7 +320,7 @@ export default function Profile() {
                   variant="outline"
                 >
                   <KeyRound className="w-5 h-5 me-2" />
-                  Changer mon mot de passe
+                  {t("profile.change_password", "Changer mon mot de passe")}
                 </Button>
               </CardContent>
             </Card>
@@ -339,10 +341,10 @@ export default function Profile() {
                 </div>
                 <div>
                   <CardTitle className="text-2xl font-display font-bold text-slate-900">
-                    Informations du compte
+                    {t("profile.account_info", "Informations du compte")}
                   </CardTitle>
                   <CardDescription className="text-slate-500">
-                    Détails de votre compte
+                    {t("profile.account_info_desc", "Détails de votre compte")}
                   </CardDescription>
                 </div>
               </div>
@@ -353,7 +355,7 @@ export default function Profile() {
                   <div className="flex items-center gap-3">
                     <ShieldCheck className="w-5 h-5 text-green-600" />
                     <div>
-                      <p className="text-sm font-bold text-slate-700">Rôle</p>
+                      <p className="text-sm font-bold text-slate-700">{t("profile.role", "Rôle")}</p>
                       <p className="text-sm text-slate-500 capitalize">{user.role || "client"}</p>
                     </div>
                   </div>
@@ -362,7 +364,7 @@ export default function Profile() {
                   <div className="flex items-center gap-3">
                     <Calendar className="w-5 h-5 text-slate-600" />
                     <div>
-                      <p className="text-sm font-bold text-slate-700">Membre depuis</p>
+                      <p className="text-sm font-bold text-slate-700">{t("profile.member_since", "Membre depuis")}</p>
                       <p className="text-sm text-slate-500">
                         {user.id ? `#${user.id}` : "—"}
                       </p>
@@ -374,9 +376,9 @@ export default function Profile() {
                     <div className="flex items-center gap-3">
                       <Globe className="w-5 h-5 text-blue-600" />
                       <div>
-                        <p className="text-sm font-bold text-blue-700">Compte Google</p>
+                        <p className="text-sm font-bold text-blue-700">{t("profile.google_account", "Compte Google")}</p>
                         <p className="text-sm text-blue-600">
-                          Connecté via Google OAuth
+                          {t("profile.google_connected", "Connecté via Google OAuth")}
                         </p>
                       </div>
                     </div>
@@ -393,19 +395,21 @@ export default function Profile() {
         <DialogContent className="bg-white rounded-[2rem] max-w-md">
           <DialogHeader>
             <DialogTitle className="text-2xl font-display font-bold text-slate-900">
-              {isGoogleUser && !hasPassword ? "Créer un mot de passe" : "Changer le mot de passe"}
+              {isGoogleUser && !hasPassword
+                ? t("profile.dialog_create_title", "Créer un mot de passe")
+                : t("profile.dialog_change_title", "Changer le mot de passe")}
             </DialogTitle>
             <DialogDescription className="text-slate-500">
-              {isGoogleUser && !hasPassword 
-                ? "Définissez un mot de passe pour vous connecter également avec un identifiant classique."
-                : "Entrez votre mot de passe actuel et votre nouveau mot de passe."}
+              {isGoogleUser && !hasPassword
+                ? t("profile.dialog_create_desc", "Définissez un mot de passe pour vous connecter également avec un identifiant classique.")
+                : t("profile.dialog_change_desc", "Entrez votre mot de passe actuel et votre nouveau mot de passe.")}
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handlePasswordChange} className="space-y-4 py-4">
             {/* Champ ancien mot de passe - caché pour les utilisateurs Google sans mot de passe */}
             {(!isGoogleUser || hasPassword) && (
               <div className="space-y-2">
-                <Label className="text-slate-700 font-bold">Mot de passe actuel</Label>
+                <Label className="text-slate-700 font-bold">{t("profile.dialog_current_password", "Mot de passe actuel")}</Label>
                 <Input
                   type="password"
                   value={oldPassword}
@@ -419,7 +423,7 @@ export default function Profile() {
 
             <div className="space-y-2">
               <Label className="text-slate-700 font-bold">
-                {isGoogleUser && !hasPassword ? "Nouveau mot de passe" : "Nouveau mot de passe"}
+                {t("profile.dialog_new_password", "Nouveau mot de passe")}
               </Label>
               <Input
                 type="password"
@@ -430,11 +434,11 @@ export default function Profile() {
                 className="h-12 bg-slate-50 border-slate-200"
               />
               {newPassword.length > 0 && newPassword.length < 6 && (
-                <p className="text-xs text-red-500 font-medium">Minimum 6 caractères</p>
+                <p className="text-xs text-red-500 font-medium">{t("profile.dialog_min_chars", "Minimum 6 caractères")}</p>
               )}
             </div>
             <div className="space-y-2">
-              <Label className="text-slate-700 font-bold">Confirmer le nouveau mot de passe</Label>
+              <Label className="text-slate-700 font-bold">{t("profile.dialog_confirm_password", "Confirmer le nouveau mot de passe")}</Label>
               <Input
                 type="password"
                 value={confirmPassword}
@@ -444,7 +448,7 @@ export default function Profile() {
                 className="h-12 bg-slate-50 border-slate-200"
               />
               {confirmPassword.length > 0 && newPassword !== confirmPassword && (
-                <p className="text-xs text-red-500 font-medium">Les mots de passe ne correspondent pas</p>
+                <p className="text-xs text-red-500 font-medium">{t("profile.error_password_mismatch", "Les mots de passe ne correspondent pas")}</p>
               )}
             </div>
             <DialogFooter className="pt-4">
@@ -454,7 +458,7 @@ export default function Profile() {
                 onClick={() => setPasswordDialogOpen(false)}
                 className="rounded-xl"
               >
-                Annuler
+                {t("profile.dialog_cancel", "Annuler")}
               </Button>
               <Button
                 type="submit"
@@ -470,7 +474,9 @@ export default function Profile() {
                 {(isGoogleUser && !hasPassword ? setPasswordMutation.isPending : changePasswordMutation.isPending) ? (
                   <Loader2 className="w-5 h-5 animate-spin" />
                 ) : (
-                  isGoogleUser && !hasPassword ? "Créer le mot de passe" : "Modifier le mot de passe"
+                  isGoogleUser && !hasPassword
+                    ? t("profile.dialog_create_submit", "Créer le mot de passe")
+                    : t("profile.dialog_change_submit", "Modifier le mot de passe")
                 )}
               </Button>
             </DialogFooter>

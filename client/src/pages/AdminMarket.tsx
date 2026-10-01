@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { BarChart3, Boxes, ClipboardList, FolderPlus, LogOut, PackagePlus, ShoppingBag, Trash2, Share2, Eye, Save, Loader2, MapPin, Mail, Phone, StickyNote, CreditCard, Hash, Clock, Truck } from "lucide-react";
+import { BarChart3, Boxes, ClipboardList, FolderPlus, LayoutGrid, LogOut, PackagePlus, ShoppingBag, Trash2, Share2, Eye, Save, Loader2, MapPin, Mail, Phone, StickyNote, CreditCard, Hash, Clock, Truck, ArrowDown, ArrowUp, Pencil, RotateCcw } from "lucide-react";
 import { FaWhatsapp } from "react-icons/fa";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
 import { SocialEmbed, platformIcon } from "@/components/SocialEmbed";
-import { SOCIAL_PLATFORMS, computeDeliveryFee, PRODUCT_LOW_STOCK_THRESHOLD, type ProductListResponse, type ProductSort, type ProductStockFilter, type SocialMediaEmbed, type SocialPlatform, type DeliverySettings, type FulfillmentMethod } from "@shared/schema";
+import { SOCIAL_PLATFORMS, computeDeliveryFee, PRODUCT_LOW_STOCK_THRESHOLD, PRODUCT_CATEGORIES, HOMEPAGE_SECTION_TYPES, HOMEPAGE_SECTION_MIN_PRODUCTS, HOMEPAGE_SECTION_MAX_PRODUCTS, HOMEPAGE_SECTION_DEFAULT_PRODUCTS, HOMEPAGE_LOCALES, type HomepageLocale, type HomepageSectionType, type ProductListResponse, type ProductSort, type ProductStockFilter, type SocialMediaEmbed, type SocialPlatform, type DeliverySettings, type FulfillmentMethod } from "@shared/schema";
 import { useProducts } from "@/hooks/use-products";
 import { PromoPrice, PromotionStatusBadge } from "@/components/PromoPrice";
 import {
@@ -18,6 +18,9 @@ import {
   type PromotionFormValues,
 } from "@/components/PromotionFields";
 import { resolvePromotion, validatePromotion } from "@shared/promotions";
+import { normalizeHomepageLocale, sectionTitle } from "@shared/homepage";
+import { formatDate, formatMoney } from "@/lib/format";
+import i18n from "@/lib/i18n";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import AdminAnalytics from "@/components/admin/AdminAnalytics";
@@ -100,7 +103,7 @@ function parseOrderItems(itemsJson: string | null | undefined): OrderItem[] {
       const item = raw as Record<string, unknown>;
       return [{
         id: Number(item.id ?? 0),
-        name: String(item.name ?? "Produit"),
+        name: String(item.name ?? i18n.t("admin.product_fallback", "Produit")),
         quantity: Number(item.quantity ?? 0),
         // Older payloads may carry `unitPrice` instead of `price`.
         price: Number(item.price ?? item.unitPrice ?? 0),
@@ -112,7 +115,7 @@ function parseOrderItems(itemsJson: string | null | undefined): OrderItem[] {
   }
 }
 
-const formatPrice = (value: number | string | null | undefined) => `${Number(value || 0).toFixed(3)} DT`;
+const formatPrice = (value: number | string | null | undefined) => formatMoney(Number(value ?? 0), i18n.language);
 
 function formatOrderDate(value: string | number | Date | null | undefined, locale: string): string {
   if (value === null || value === undefined || value === "") return "—";
@@ -120,15 +123,7 @@ function formatOrderDate(value: string | number | Date | null | undefined, local
     ? value
     : new Date(typeof value === "number" && value < 1e12 ? value * 1000 : value);
   if (Number.isNaN(date.getTime())) return "—";
-  // BCP-47 tag per UI language. "fr-TN" is the one exception to using the bare
-  // language code: French is only ever presented here in its Tunisian form.
-  const intlLocale = locale === "fr" ? "fr-TN" : locale;
-  try {
-    return date.toLocaleString(intlLocale, { dateStyle: "medium", timeStyle: "short" });
-  } catch {
-    // An unknown tag must not blank out the cell.
-    return date.toISOString().slice(0, 16).replace("T", " ");
-  }
+  return formatDate(date, locale, { dateStyle: "medium", timeStyle: "short" });
 }
 
 function paymentLabel(method: string | null | undefined, t: TFunction): string {
@@ -159,7 +154,12 @@ function whatsappOrderLink(order: Order): string | null {
   else if (digits.startsWith("0")) international = `216${digits.slice(1)}`;
   else international = `216${digits}`;
   const message = encodeURIComponent(
-    `Bonjour ${order.customerName || ""}, au sujet de votre commande B&B Market n°${order.id} (${formatPrice(order.total)}).`,
+    i18n.t("admin.whatsapp_order_message", {
+      name: order.customerName || "",
+      id: order.id,
+      total: formatPrice(order.total),
+      defaultValue: "Bonjour {{name}}, au sujet de votre commande B&B Market n°{{id}} ({{total}}).",
+    }),
   );
   return `https://wa.me/${international}?text=${message}`;
 }
@@ -176,7 +176,7 @@ export default function AdminMarket() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const { t } = useTranslation();
-  const [tab, setTab] = useState<"overview" | "products" | "categories" | "orders" | "delivery" | "social">("overview");
+  const [tab, setTab] = useState<"overview" | "products" | "categories" | "homepage" | "orders" | "delivery" | "social">("overview");
   const [categoryName, setCategoryName] = useState("");
   const [productForm, setProductForm] = useState({ name: "", description: "", category: "", quantity: "0", price: "0" });
   const [promotionForm, setPromotionForm] = useState<PromotionFormValues>(EMPTY_PROMOTION_FORM);
@@ -234,10 +234,15 @@ export default function AdminMarket() {
       queryClient.invalidateQueries({ queryKey: ["/api/social-media"] });
       toast({
         title: t(variables.url ? "admin.social_link_saved" : "admin.social_link_removed", { platform: PLATFORM_LABEL[variables.platform] }),
-        description: variables.url ? "Le lien est maintenant affiché sur le site." : "Aucun lien ne sera affiché pour cette plateforme.",
+        description: t(
+          variables.url ? "admin.social_link_saved_desc" : "admin.social_link_removed_desc",
+          variables.url
+            ? "Le lien est maintenant affiché sur le site."
+            : "Aucun lien ne sera affiché pour cette plateforme.",
+        ),
       });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Erreur", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: t("admin.error_title", "Erreur"), description: e.message }),
   });
 
   const removeSocialLink = useMutation({
@@ -249,13 +254,13 @@ export default function AdminMarket() {
       setSocialPreview(null);
       toast({ title: t("admin.social_link_deleted", { platform: PLATFORM_LABEL[platform] }) });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Erreur", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: t("admin.error_title", "Erreur"), description: e.message }),
   });
 
   const createCategory = useMutation({
     mutationFn: () => jsonFetch<Category>("/api/categories", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: categoryName }) }),
     onSuccess: () => { setCategoryName(""); queryClient.invalidateQueries({ queryKey: ["/api/categories"] }); toast({ title: t("admin.category_added") }); },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Erreur", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: t("admin.error_title", "Erreur"), description: e.message }),
   });
 
   const deleteCategory = useMutation({
@@ -265,7 +270,7 @@ export default function AdminMarket() {
 
   const createProduct = useMutation({
     mutationFn: async () => {
-      if (!productImage) throw new Error("Ajoutez une image du produit.");
+      if (!productImage) throw new Error(t("admin.product_image_required", "Ajoutez une image du produit."));
       const fd = new FormData();
       Object.entries(productForm).forEach(([k, v]) => fd.append(k, v));
       // Promotion fields ride along on the same multipart body. Empty strings are
@@ -280,9 +285,9 @@ export default function AdminMarket() {
       setPromotionForm(EMPTY_PROMOTION_FORM);
       setProductImage(null);
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
-      toast({ title: "Produit ajouté" });
+      toast({ title: t("admin.product_added", "Produit ajouté") });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Produit non ajouté", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: t("admin.product_not_added", "Produit non ajouté"), description: e.message }),
   });
 
   /**
@@ -303,9 +308,9 @@ export default function AdminMarket() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
       setEditingProductId(null);
-      toast({ title: "Produit mis à jour" });
+      toast({ title: t("admin.product_updated", "Produit mis à jour") });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: "Mise à jour impossible", description: e.message }),
+    onError: (e: Error) => toast({ variant: "destructive", title: t("admin.product_update_failed", "Mise à jour impossible"), description: e.message }),
   });
 
   const deleteProduct = useMutation({
@@ -337,7 +342,7 @@ export default function AdminMarket() {
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
       toast({ title: t("admin.delivery_saved") });
     },
-    onError: (error: any) => toast({ variant: "destructive", title: "Échec de l'enregistrement", description: error?.message || "Veuillez réessayer." }),
+    onError: (error: any) => toast({ variant: "destructive", title: t("admin.save_failed", "Échec de l'enregistrement"), description: error?.message || t("admin.retry", "Veuillez réessayer.") }),
   });
 
   // The overview's counts used to be assembled here from the full product, order and
@@ -352,6 +357,7 @@ export default function AdminMarket() {
     ["overview", t("admin.nav_overview"), BarChart3],
     ["products", t("admin.nav_products"), ShoppingBag],
     ["categories", t("admin.nav_categories"), FolderPlus],
+    ["homepage", t("admin.nav_homepage"), LayoutGrid],
     ["orders", t("admin.nav_orders"), ClipboardList],
     ["delivery", t("admin.nav_delivery"), Truck],
     ["social", t("admin.nav_social"), Share2],
@@ -438,6 +444,8 @@ export default function AdminMarket() {
               </div>
             </Panel>
           )}
+
+          {tab === "homepage" && <HomepageSectionsPanel />}
 
           {tab === "orders" && <Panel title={t("admin.orders_all")}><OrdersTable orders={orders.data || []} onStatus={(id, status) => updateOrderStatus.mutate({ id, status })} /></Panel>}
 
@@ -640,7 +648,7 @@ function AdminProductRow({ product, onDelete, onStock, onEdit, editing, onStartE
             <input value={draft.name} onChange={e => setDraft(d => ({ ...d, name: e.target.value }))} className="field mt-1" />
           </div>
           <div>
-            <label className="text-[11px] uppercase tracking-wider font-bold text-muted-foreground">{t("promotion.regular_price")} (DT)</label>
+            <label className="text-[11px] uppercase tracking-wider font-bold text-muted-foreground">{t("admin.price_with_unit", "Prix normal (DT)")}</label>
             <input type="number" step="0.001" min="0" value={draft.price} onChange={e => setDraft(d => ({ ...d, price: e.target.value }))} className="field mt-1" />
           </div>
           <div>
@@ -834,11 +842,12 @@ function OrderThumb({ item, size = 48 }: { item: OrderItem; size?: number }) {
 }
 
 function OrderLineItem({ item }: { item: OrderItem }) {
+  const { t } = useTranslation();
   return <div className="flex items-center gap-3">
     <OrderThumb item={item} />
     <div className="min-w-0 flex-1">
       <div className="font-bold text-sm leading-tight">{item.quantity} × {item.name}</div>
-      <div className="text-xs text-muted-foreground mt-0.5">{formatPrice(item.price)} / unité</div>
+      <div className="text-xs text-muted-foreground mt-0.5">{t("admin.price_per_unit", "{{price}} / unité", { price: formatPrice(item.price) })}</div>
     </div>
     <div className="text-end font-black whitespace-nowrap">{formatPrice(item.price * item.quantity)}</div>
   </div>;
@@ -896,7 +905,7 @@ function OrderDetailsDialog({ order, onClose, onStatus }: { order: Order | null;
             <div className="flex justify-between"><span className="text-muted-foreground">{t("admin.orders_subtotal")}</span><span className="font-bold">{formatPrice(subtotal)}</span></div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">{t("admin.orders_delivery_fee")}</span>
-              <span className="font-bold">{fulfillment === "pickup" ? "0.000 DT" : formatPrice(deliveryFee)}</span>
+              <span className="font-bold">{fulfillment === "pickup" ? formatPrice(0) : formatPrice(deliveryFee)}</span>
             </div>
             <div className="flex justify-between text-base"><span className="font-black">{t("admin.orders_total")}</span><span className="font-black text-[#ff6200]">{formatPrice(total)}</span></div>
           </div>
@@ -930,6 +939,628 @@ function Toggle({ checked, onChange, label, hint, icon }: { checked: boolean; on
       <span className={`absolute top-1 w-6 h-6 rounded-full bg-white shadow transition-all ${checked ? "left-7" : "left-1"}`} />
     </button>
   </div>;
+}
+
+/** A homepage section as the admin API returns it. */
+type HomepageSectionRow = {
+  id: number;
+  titleFr: string;
+  titleEn: string | null;
+  titleAr: string | null;
+  type: HomepageSectionType;
+  category: string | null;
+  maxPrice: number | null;
+  maxProducts: number;
+  displayOrder: number;
+  enabled: boolean;
+  tileImageUrl: string | null;
+  tileTitleFr: string | null;
+  tileTitleEn: string | null;
+  tileTitleAr: string | null;
+  tileSubtitleFr: string | null;
+  tileSubtitleEn: string | null;
+  tileSubtitleAr: string | null;
+  tileCtaLabelFr: string | null;
+  tileCtaLabelEn: string | null;
+  tileCtaLabelAr: string | null;
+  tileHref: string | null;
+};
+
+/**
+ * Every numeric field is a string in the form.
+ *
+ * Same reason as the delivery settings panel: a controlled number input reports
+ * `""` for a cleared box, and keeping that as a string means the admin can clear
+ * a value without the component having to guess what "empty" means for each one.
+ * The draft is converted to the API's shape (numbers, real nulls) in one place -
+ * `toSectionPayload` - so no field is coerced twice.
+ */
+type HomepageSectionDraft = {
+  titleFr: string;
+  titleEn: string;
+  titleAr: string;
+  type: HomepageSectionType;
+  category: string;
+  maxPrice: string;
+  maxProducts: string;
+  displayOrder: string;
+  tileImageUrl: string;
+  tileTitleFr: string;
+  tileTitleEn: string;
+  tileTitleAr: string;
+  tileSubtitleFr: string;
+  tileSubtitleEn: string;
+  tileSubtitleAr: string;
+  tileCtaLabelFr: string;
+  tileCtaLabelEn: string;
+  tileCtaLabelAr: string;
+  tileHref: string;
+};
+
+const EMPTY_SECTION_DRAFT: HomepageSectionDraft = {
+  titleFr: "",
+  titleEn: "",
+  titleAr: "",
+  type: "newest",
+  category: "",
+  maxPrice: "",
+  maxProducts: String(HOMEPAGE_SECTION_DEFAULT_PRODUCTS),
+  displayOrder: "",
+  tileImageUrl: "",
+  tileTitleFr: "",
+  tileTitleEn: "",
+  tileTitleAr: "",
+  tileSubtitleFr: "",
+  tileSubtitleEn: "",
+  tileSubtitleAr: "",
+  tileCtaLabelFr: "",
+  tileCtaLabelEn: "",
+  tileCtaLabelAr: "",
+  tileHref: "",
+};
+
+/**
+ * Which field each shelf type actually needs.
+ *
+ * `category` and `price_under` are the only two that take an extra input, so the
+ * form hides the rest rather than showing a category picker on a "newest" shelf
+ * and inviting the admin to fill in a field that is then ignored. The server
+ * rejects a mismatched pair regardless; hiding it just means the mistake is harder
+ * to make.
+ */
+const HOMEPAGE_TYPE_LABEL_KEYS: Record<HomepageSectionType, string> = {
+  newest: "admin.homepage_type_newest",
+  best_sellers: "admin.homepage_type_best_sellers",
+  low_stock: "admin.homepage_type_low_stock",
+  promotions: "admin.homepage_type_promotions",
+  category: "admin.homepage_type_category",
+  price_under: "admin.homepage_type_price_under",
+};
+
+/**
+ * The language tabs, and which draft field each one edits.
+ *
+ * A lookup table rather than an if/else per language means a fourth locale would
+ * need one row here and one set of columns, not a new block of JSX. The tab
+ * labels are endonyms ("Français", "English", "العربية") in every locale so an
+ * admin who lands in the wrong language can still recognise their own.
+ */
+const HOMEPAGE_LANG_TAB_KEYS: Record<HomepageLocale, string> = {
+  fr: "admin.homepage_lang_fr",
+  en: "admin.homepage_lang_en",
+  ar: "admin.homepage_lang_ar",
+};
+
+const HOMEPAGE_TITLE_FIELDS: Record<HomepageLocale, keyof HomepageSectionDraft> = {
+  fr: "titleFr",
+  en: "titleEn",
+  ar: "titleAr",
+};
+
+const HOMEPAGE_TILE_TITLE_FIELDS: Record<HomepageLocale, keyof HomepageSectionDraft> = {
+  fr: "tileTitleFr",
+  en: "tileTitleEn",
+  ar: "tileTitleAr",
+};
+
+const HOMEPAGE_TILE_SUBTITLE_FIELDS: Record<HomepageLocale, keyof HomepageSectionDraft> = {
+  fr: "tileSubtitleFr",
+  en: "tileSubtitleEn",
+  ar: "tileSubtitleAr",
+};
+
+const HOMEPAGE_TILE_CTA_FIELDS: Record<HomepageLocale, keyof HomepageSectionDraft> = {
+  fr: "tileCtaLabelFr",
+  en: "tileCtaLabelEn",
+  ar: "tileCtaLabelAr",
+};
+
+function toSectionDraft(section: HomepageSectionRow): HomepageSectionDraft {
+  return {
+    titleFr: section.titleFr,
+    titleEn: section.titleEn ?? "",
+    titleAr: section.titleAr ?? "",
+    type: section.type,
+    category: section.category ?? "",
+    maxPrice: section.maxPrice === null || section.maxPrice === undefined ? "" : String(section.maxPrice),
+    maxProducts: String(section.maxProducts),
+    displayOrder: String(section.displayOrder),
+    tileImageUrl: section.tileImageUrl ?? "",
+    tileTitleFr: section.tileTitleFr ?? "",
+    tileTitleEn: section.tileTitleEn ?? "",
+    tileTitleAr: section.tileTitleAr ?? "",
+    tileSubtitleFr: section.tileSubtitleFr ?? "",
+    tileSubtitleEn: section.tileSubtitleEn ?? "",
+    tileSubtitleAr: section.tileSubtitleAr ?? "",
+    tileCtaLabelFr: section.tileCtaLabelFr ?? "",
+    tileCtaLabelEn: section.tileCtaLabelEn ?? "",
+    tileCtaLabelAr: section.tileCtaLabelAr ?? "",
+    tileHref: section.tileHref ?? "",
+  };
+}
+
+/**
+ * Draft -> API payload.
+ *
+ * Empty strings become `null` rather than being omitted, and the two numbers that
+ * are genuinely optional become `undefined`. That distinction matters: a shelf
+ * switched to `price_under` and left without a ceiling is rejected by the server,
+ * but one switched back to `newest` still keeps its old ceiling stored, harmless
+ * because the type no longer reads it.
+ */
+function toSectionPayload(draft: HomepageSectionDraft) {
+  const text = (value: string) => value.trim() || null;
+  const number = (value: string) => (value.trim() === "" ? undefined : Number(value));
+  return {
+    // Only French is required; every other language is allowed to be empty and
+    // is stored as NULL, which the reader treats as "fall back to French".
+    titleFr: draft.titleFr.trim(),
+    titleEn: text(draft.titleEn),
+    titleAr: text(draft.titleAr),
+    type: draft.type,
+    category: text(draft.category),
+    maxPrice: number(draft.maxPrice) ?? null,
+    maxProducts: Number(draft.maxProducts) || HOMEPAGE_SECTION_DEFAULT_PRODUCTS,
+    displayOrder: number(draft.displayOrder) ?? 0,
+    tileImageUrl: text(draft.tileImageUrl),
+    tileTitleFr: text(draft.tileTitleFr),
+    tileTitleEn: text(draft.tileTitleEn),
+    tileTitleAr: text(draft.tileTitleAr),
+    tileSubtitleFr: text(draft.tileSubtitleFr),
+    tileSubtitleEn: text(draft.tileSubtitleEn),
+    tileSubtitleAr: text(draft.tileSubtitleAr),
+    tileCtaLabelFr: text(draft.tileCtaLabelFr),
+    tileCtaLabelEn: text(draft.tileCtaLabelEn),
+    tileCtaLabelAr: text(draft.tileCtaLabelAr),
+    tileHref: text(draft.tileHref),
+  };
+}
+
+/**
+ * Pull the readable message out of an API error.
+ *
+ * `jsonFetch` rejects with the raw response text, and every route here answers
+ * with `{ message }`, so the rejection is a JSON string rather than a sentence.
+ * Showing it verbatim would put `{"message":"Prix maximum requis..."}` in a toast.
+ */
+function sectionErrorMessage(error: unknown, t: TFunction): string {
+  const raw = error instanceof Error ? error.message : String(error ?? "");
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.message === "string") {
+      const message: string = parsed.message;
+      // The server validates in the reader's language it cannot know, so it
+      // returns `admin.homepage_error_*` keys. Real driver/proxy messages are
+      // passed through untouched.
+      return message.startsWith("admin.") ? t(message) : message;
+    }
+  } catch {
+    // Not JSON - a plain-text error (a 500 from a proxy, say) is already readable.
+  }
+  return raw || t("admin.homepage_error_generic");
+}
+
+function HomepageSectionsPanel() {
+  const { t, i18n } = useTranslation();
+  const { toast } = useToast();
+  const [draft, setDraft] = useState<HomepageSectionDraft>(EMPTY_SECTION_DRAFT);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  // Open the form on the language the admin is actually using, so the obvious
+  // thing to edit is the one on screen.
+  const [activeLang, setActiveLang] = useState<HomepageLocale>(() => normalizeHomepageLocale(i18n.language));
+
+  const sections = useQuery<HomepageSectionRow[]>({
+    queryKey: ["/api/admin/homepage-sections"],
+    queryFn: () => jsonFetch("/api/admin/homepage-sections"),
+  });
+
+  /**
+   * Both caches, not just this one.
+   *
+   * The admin list and the homepage read *different* endpoints (one carries the
+   * products, one does not), so their query keys are unrelated strings and a
+   * prefix invalidation only refreshes the key it was given. Saving a shelf has to
+   * invalidate both, or the change appears to save and then not appear on the
+   * site.
+   */
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/admin/homepage-sections"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/homepage-sections"] });
+  };
+
+  const createSection = useMutation({
+    mutationFn: (payload: ReturnType<typeof toSectionPayload>) =>
+      jsonFetch<HomepageSectionRow>("/api/homepage-sections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+    onSuccess: () => {
+      setDraft(EMPTY_SECTION_DRAFT);
+      invalidate();
+      toast({ title: t("admin.homepage_created") });
+    },
+    onError: (error: unknown) =>
+      toast({ variant: "destructive", title: t("admin.homepage_save_failed"), description: sectionErrorMessage(error, t) }),
+  });
+
+  const updateSection = useMutation({
+    mutationFn: ({ id, payload }: { id: number; payload: ReturnType<typeof toSectionPayload> }) =>
+      jsonFetch<HomepageSectionRow>(`/api/homepage-sections/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }),
+    onSuccess: () => {
+      setEditingId(null);
+      invalidate();
+      toast({ title: t("admin.homepage_updated") });
+    },
+    onError: (error: unknown) =>
+      toast({ variant: "destructive", title: t("admin.homepage_save_failed"), description: sectionErrorMessage(error, t) }),
+  });
+
+  const deleteSection = useMutation({
+    mutationFn: (id: number) => jsonFetch<void>(`/api/homepage-sections/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      invalidate();
+      toast({ title: t("admin.homepage_deleted") });
+    },
+    onError: (error: unknown) =>
+      toast({ variant: "destructive", title: t("admin.homepage_save_failed"), description: sectionErrorMessage(error, t) }),
+  });
+
+  /**
+   * Enabled/disabled is a PATCH of one field rather than its own endpoint.
+   *
+   * It is the same update an edit makes, so a shelf cannot end up in a state the
+   * PATCH route would reject: toggling goes through the identical merged-row
+   * validation as the form.
+   */
+  const toggleSection = useMutation({
+    mutationFn: ({ section, enabled }: { section: HomepageSectionRow; enabled: boolean }) =>
+      jsonFetch<HomepageSectionRow>(`/api/homepage-sections/${section.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      }),
+    onSuccess: () => invalidate(),
+    onError: (error: unknown) =>
+      toast({ variant: "destructive", title: t("admin.homepage_save_failed"), description: sectionErrorMessage(error, t) }),
+  });
+
+  /**
+   * Move a shelf one position and persist the whole order.
+   *
+   * Sending the full id list rather than a single "new position" number means the
+   * server is the only thing that decides what display orders mean, and two admins
+   * reordering at once cannot interleave two half-applied orders. Positions are
+   * written as multiples of 10 server-side, so an insert later only shifts one row.
+   */
+  const moveSection = useMutation({
+    mutationFn: ({ orderedIds }: { orderedIds: number[] }) =>
+      jsonFetch<HomepageSectionRow[]>("/api/homepage-sections/reorder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: orderedIds }),
+      }),
+    onSuccess: () => invalidate(),
+    onError: (error: unknown) =>
+      toast({ variant: "destructive", title: t("admin.homepage_save_failed"), description: sectionErrorMessage(error, t) }),
+  });
+
+  const rows = sections.data || [];
+
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    const payload = toSectionPayload(draft);
+    // Validate client-side in the admin's language so the usual mistakes never
+    // surface as a server round trip. The server still re-checks everything.
+    const invalid =
+      (!payload.titleFr && "admin.homepage_error_title_required") ||
+      (payload.type === "category" && !payload.category && "admin.homepage_error_category_required") ||
+      (payload.type === "price_under" && !(Number(payload.maxPrice) > 0) && "admin.homepage_error_price_required") ||
+      (payload.tileHref &&
+        !payload.tileHref.startsWith("/") &&
+        !/^https?:\/\//i.test(payload.tileHref) &&
+        "admin.homepage_error_href_invalid");
+    if (invalid) {
+      toast({ variant: "destructive", title: t("admin.homepage_save_failed"), description: t(invalid) });
+      return;
+    }
+    if (editingId === null) {
+      createSection.mutate(payload);
+    } else {
+      updateSection.mutate({ id: editingId, payload });
+    }
+  };
+
+  const startEdit = (section: HomepageSectionRow) => {
+    setEditingId(section.id);
+    setDraft(toSectionDraft(section));
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setDraft(EMPTY_SECTION_DRAFT);
+  };
+
+  const shift = (index: number, delta: number) => {
+    const target = index + delta;
+    if (target < 0 || target >= rows.length) return;
+    const ordered = rows.map((row) => row.id);
+    [ordered[index], ordered[target]] = [ordered[target], ordered[index]];
+    moveSection.mutate({ orderedIds: ordered });
+  };
+
+  const field = (key: keyof HomepageSectionDraft) => (value: string) => setDraft((current) => ({ ...current, [key]: value }));
+  const busy = createSection.isPending || updateSection.isPending;
+  const editingSection = editingId === null ? null : rows.find((row) => row.id === editingId) || null;
+
+  return (
+    <div className="space-y-7">
+      <Panel title={editingId === null ? t("admin.homepage_add") : t("admin.homepage_edit")} icon={<LayoutGrid className="w-5 h-5" />}>
+        <form onSubmit={submit} className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <div className="md:col-span-2 xl:col-span-3 p-4 rounded-2xl border border-border bg-background/60">
+            <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-1">{t("admin.homepage_languages")}</p>
+            <p className="text-xs text-muted-foreground mb-4">{t("admin.homepage_languages_hint")}</p>
+
+            <div role="tablist" aria-label={t("admin.homepage_languages")} className="flex flex-wrap gap-2 mb-4">
+              {HOMEPAGE_LOCALES.map((lang) => {
+                // A language other than French with no title of its own will fall
+                // back to the French heading at runtime; the dot flags that so the
+                // admin can tell "translated" from "inherited" at a glance.
+                const inherited = lang !== "fr" && !draft[HOMEPAGE_TITLE_FIELDS[lang]].trim();
+                return (
+                  <button
+                    key={lang}
+                    type="button"
+                    role="tab"
+                    aria-selected={activeLang === lang}
+                    onClick={() => setActiveLang(lang)}
+                    className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold border transition-colors ${
+                      activeLang === lang
+                        ? "bg-[#ff6200] text-white border-[#ff6200]"
+                        : "border-border hover:bg-black/5 dark:hover:bg-white/10"
+                    }`}
+                  >
+                    {t(HOMEPAGE_LANG_TAB_KEYS[lang])}
+                    {inherited && <span className="w-1.5 h-1.5 rounded-full bg-current opacity-50" />}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+              <label className="block md:col-span-2 xl:col-span-3">
+                <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">
+                  {t("admin.homepage_field_title")}
+                  {activeLang === "fr" && <span className="text-[#ff6200]"> *</span>}
+                </span>
+                <Input
+                  required={activeLang === "fr"}
+                  value={draft[HOMEPAGE_TITLE_FIELDS[activeLang]]}
+                  onChange={field(HOMEPAGE_TITLE_FIELDS[activeLang])}
+                  placeholder={t("admin.homepage_title_placeholder")}
+                  className="mt-1"
+                />
+              </label>
+
+              <label className="block">
+                <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{t("admin.homepage_tile_title")}</span>
+                <Input value={draft[HOMEPAGE_TILE_TITLE_FIELDS[activeLang]]} onChange={field(HOMEPAGE_TILE_TITLE_FIELDS[activeLang])} className="mt-1" />
+              </label>
+
+              <label className="block">
+                <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{t("admin.homepage_tile_subtitle")}</span>
+                <Input value={draft[HOMEPAGE_TILE_SUBTITLE_FIELDS[activeLang]]} onChange={field(HOMEPAGE_TILE_SUBTITLE_FIELDS[activeLang])} className="mt-1" />
+              </label>
+
+              <label className="block">
+                <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{t("admin.homepage_tile_cta")}</span>
+                <Input value={draft[HOMEPAGE_TILE_CTA_FIELDS[activeLang]]} onChange={field(HOMEPAGE_TILE_CTA_FIELDS[activeLang])} className="mt-1" />
+              </label>
+            </div>
+
+            <p className="text-xs text-muted-foreground mt-3">{t("admin.homepage_lang_hint")}</p>
+          </div>
+
+          <label className="block">
+            <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{t("admin.homepage_field_type")}</span>
+            <select className="field mt-1" value={draft.type} onChange={e => field("type")(e.target.value)}>
+              {HOMEPAGE_SECTION_TYPES.map((value) => (
+                <option key={value} value={value}>{t(HOMEPAGE_TYPE_LABEL_KEYS[value])}</option>
+              ))}
+            </select>
+          </label>
+
+          {draft.type === "category" && (
+            <label className="block">
+              <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{t("admin.homepage_field_category")}</span>
+              <select className="field mt-1" value={draft.category} onChange={e => field("category")(e.target.value)}>
+                <option value="">{t("admin.homepage_pick_category")}</option>
+                {PRODUCT_CATEGORIES.map((value) => (
+                  <option key={value} value={value}>{value}</option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          {draft.type === "price_under" && (
+            <label className="block">
+              <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{t("admin.homepage_field_max_price")}</span>
+              <Input
+                type="number"
+                min={0}
+                step="0.001"
+                value={draft.maxPrice}
+                onChange={field("maxPrice")}
+                placeholder={t("admin.homepage_max_price_placeholder")}
+                className="mt-1"
+              />
+            </label>
+          )}
+
+          <label className="block">
+            <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{t("admin.homepage_field_max_products")}</span>
+            <Input
+              type="number"
+              min={HOMEPAGE_SECTION_MIN_PRODUCTS}
+              max={HOMEPAGE_SECTION_MAX_PRODUCTS}
+              value={draft.maxProducts}
+              onChange={field("maxProducts")}
+              className="mt-1"
+            />
+            <span className="text-xs text-muted-foreground mt-1 block">
+              {t("admin.homepage_max_products_hint", {
+                min: HOMEPAGE_SECTION_MIN_PRODUCTS,
+                max: HOMEPAGE_SECTION_MAX_PRODUCTS,
+              })}
+            </span>
+          </label>
+
+          <label className="block">
+            <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{t("admin.homepage_field_order")}</span>
+            <Input type="number" min={0} value={draft.displayOrder} onChange={field("displayOrder")} placeholder={t("admin.homepage_order_auto")} className="mt-1" />
+          </label>
+
+          <div className="md:col-span-2 xl:col-span-3 mt-2 p-4 rounded-2xl border border-dashed border-border">
+            <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-1">{t("admin.homepage_tile_optional")}</p>
+            <p className="text-xs text-muted-foreground mb-4">{t("admin.homepage_tile_hint")}</p>
+            <div className="grid md:grid-cols-2 gap-4">
+              <label className="block">
+                <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{t("admin.homepage_tile_image")}</span>
+                <Input value={draft.tileImageUrl} onChange={field("tileImageUrl")} placeholder="https://..." className="mt-1" />
+              </label>
+              <label className="block">
+                <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{t("admin.homepage_tile_href")}</span>
+                <Input value={draft.tileHref} onChange={field("tileHref")} placeholder="/products?promo=active" className="mt-1" />
+              </label>
+            </div>
+            <p className="text-xs text-muted-foreground mt-3">{t("admin.homepage_tile_media_hint")}</p>
+          </div>
+
+          <div className="md:col-span-2 xl:col-span-3 flex flex-wrap gap-3 pt-2">
+            <button type="submit" className="btn-primary flex items-center gap-2" disabled={busy}>
+              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              {editingId === null ? t("admin.homepage_add") : t("admin.homepage_save")}
+            </button>
+            {editingId !== null && (
+              <button type="button" onClick={cancelEdit} className="px-4 py-3 rounded-2xl border border-border font-bold inline-flex items-center gap-2">
+                <RotateCcw className="w-4 h-4" /> {t("admin.homepage_cancel")}
+              </button>
+            )}
+          </div>
+        </form>
+      </Panel>
+
+      <Panel title={t("admin.homepage_manage")}>
+        <p className="text-sm text-muted-foreground -mt-3 mb-6">{t("admin.homepage_intro")}</p>
+        {sections.isLoading ? (
+          <div className="py-10 text-center text-muted-foreground"><Loader2 className="w-6 h-6 mx-auto animate-spin" /></div>
+        ) : rows.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+            {t("admin.homepage_empty")}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {rows.map((section, index) => (
+              <div key={section.id} className={`p-4 rounded-2xl border bg-background ${section.enabled ? "" : "opacity-60"}`}>
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => shift(index, -1)}
+                      disabled={index === 0 || moveSection.isPending}
+                      aria-label={t("admin.homepage_move_up")}
+                      className="p-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-30"
+                    >
+                      <ArrowUp className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => shift(index, 1)}
+                      disabled={index === rows.length - 1 || moveSection.isPending}
+                      aria-label={t("admin.homepage_move_down")}
+                      className="p-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-30"
+                    >
+                      <ArrowDown className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="flex-1 min-w-[12rem]">
+                    <div className="font-black">{sectionTitle(section, i18n.language)}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {t(HOMEPAGE_TYPE_LABEL_KEYS[section.type])}
+                      {section.type === "category" && section.category ? ` · ${section.category}` : ""}
+                      {section.type === "price_under" && section.maxPrice !== null
+                        ? ` · ≤ ${formatMoney(Number(section.maxPrice), i18n.language)}`
+                        : ""}
+                      {` · ${t("admin.homepage_products_count", { count: section.maxProducts })}`}
+                    </div>
+                  </div>
+
+                  <span className={`text-xs font-bold px-3 py-1.5 rounded-full ${section.enabled ? "bg-emerald-500/10 text-emerald-600" : "bg-slate-500/10 text-muted-foreground"}`}>
+                    {section.enabled ? t("admin.homepage_enabled") : t("admin.homepage_disabled")}
+                  </span>
+
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={section.enabled}
+                      onClick={() => toggleSection.mutate({ section, enabled: !section.enabled })}
+                      aria-label={t("admin.homepage_enabled")}
+                      className={`relative w-12 h-7 rounded-full transition-colors shrink-0 ${section.enabled ? "bg-[#ff6200]" : "bg-slate-300 dark:bg-slate-700"}`}
+                    >
+                      <span className={`absolute top-0.5 w-6 h-6 rounded-full bg-white shadow transition-all ${section.enabled ? "left-[1.4rem]" : "left-0.5"}`} />
+                    </button>
+                    <button type="button" onClick={() => startEdit(section)} aria-label={t("admin.homepage_edit")} className="p-2 rounded-xl hover:bg-black/5 dark:hover:bg-white/10">
+                      <Pencil className="w-4 h-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteSection.mutate(section.id)}
+                      aria-label={t("admin.homepage_delete")}
+                      className="p-2 rounded-xl hover:bg-red-50 text-red-500"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {editingId === section.id && (
+                  <p className="text-xs text-[#ff6200] font-bold mt-3">
+                    {t("admin.homepage_editing_below", { title: sectionTitle(editingSection ?? section, i18n.language) })}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
 }
 
 function DeliverySettingsPanel({ settings, onSave, saving }: { settings: DeliverySettings; onSave: (next: DeliverySettings) => void; saving: boolean }) {

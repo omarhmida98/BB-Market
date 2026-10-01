@@ -165,6 +165,31 @@ function tsLiteral(ms: number): string {
 }
 
 /**
+ * FROM clause expanding order snapshots into one row per line item.
+ *
+ * Split out of `snapshotJoin` because the best-seller shelf needs the same
+ * expansion with no analytics window: the JSON dialect traps and the corrupt-row
+ * guards below are the expensive, easy-to-get-wrong part, so they must not be
+ * duplicated for a second caller. `snapshotJoin` supplies the window; this
+ * function supplies everything that does not depend on one.
+ */
+function snapshotFrom(): string {
+  if (isPg) {
+    return `FROM orders o
+    LEFT JOIN LATERAL jsonb_array_elements(
+      CASE WHEN o.items_json ~ '^\\s*\\[' THEN o.items_json::jsonb ELSE '[]'::jsonb END
+    ) AS j ON true`;
+  }
+
+  return `FROM orders o
+    LEFT JOIN json_each(
+      CASE WHEN json_valid(o.items_json) = 1
+        THEN CASE WHEN json_type(o.items_json) = 'array' THEN o.items_json ELSE '[]' END
+        ELSE '[]' END
+    ) AS j ON true`;
+}
+
+/**
  * FROM + WHERE fragments that expand order snapshots into one row per line.
  *
  * Shared by `queryTopProducts` and `queryTopCategories` so the two cannot drift:
@@ -212,27 +237,58 @@ function snapshotJoin(window: AnalyticsWindow): { el: string; from: string; wher
       AND o.created_at < ${tsLiteral(window.toMs)}
       AND ${positiveQty(jsonNumber(`${el}->>'quantity'`))} = 1`;
 
-  if (isPg) {
-    return {
-      el,
-      from: `FROM orders o
-    LEFT JOIN LATERAL jsonb_array_elements(
-      CASE WHEN o.items_json ~ '^\\s*\\[' THEN o.items_json::jsonb ELSE '[]'::jsonb END
-    ) AS j ON true`,
-      where,
-    };
-  }
+  return { el, from: snapshotFrom(), where };
+}
 
-  return {
+/**
+ * Rank products by units actually sold, all-time, excluding cancelled orders.
+ *
+ * This is what the homepage "best sellers" shelf is built on, and it is
+ * deliberately the same snapshot expansion the dashboard uses rather than a
+ * second, slightly different implementation: a shelf that ranked by wishlist
+ * additions or page views would be a popularity guess, and the two could
+ * disagree with the numbers the admin sees in Analytics.
+ *
+ * Deliberately NOT windowed to the analytics range. The dashboard's window is a
+ * reporting choice (this week, this month); a shelf is asking "what do people buy
+ * from us", which an all-time answer serves better, and a brand-new shop has no
+ * orders inside a 30-day window at all - its best-seller shelf would be empty.
+ *
+ * Only ids come back. The caller resolves them against `products`, which
+ * naturally drops rows whose product has since been deleted or renamed, and
+ * which means a product deleted tomorrow cannot keep a ghost on the homepage.
+ */
+export async function getBestSellingProductIds(limit: number, excludeIds: number[] = []): Promise<number[]> {
+  const el = itemElement();
+  const idExpr = jsonNumber(`${el}->>'id'`);
+  const qtyExpr = jsonNumber(`${el}->>'quantity'`);
+  const skip = excludeIds.filter((id) => Number.isInteger(id) && id > 0);
+
+  const exclusion =
+    skip.length > 0
+      ? `AND CAST(${el}->>'id' AS ${isPg ? "integer" : "INTEGER"}) NOT IN (${skip.join(",")})`
+      : "";
+
+  const rows = await runSnapshotAggregate(
+    "best sellers",
+    () => `
+      SELECT
+        ${idExpr} AS product_id,
+        SUM(${qtyExpr}) AS units_sold
+      ${snapshotFrom()}
+      WHERE ${NON_CANCELLED}
+        AND ${positiveQty(jsonNumber(`${el}->>'quantity'`))} = 1
+        ${exclusion}
+      GROUP BY ${idExpr}
+      ORDER BY units_sold DESC, ${idExpr} ASC
+      LIMIT ${Math.max(1, Math.floor(limit))}
+    `,
     el,
-    from: `FROM orders o
-    LEFT JOIN json_each(
-      CASE WHEN json_valid(o.items_json) = 1
-        THEN CASE WHEN json_type(o.items_json) = 'array' THEN o.items_json ELSE '[]' END
-        ELSE '[]' END
-    ) AS j ON true`,
-    where,
-  };
+  );
+
+  return rows
+    .map((row) => Math.round(toFiniteNumber(row.product_id)))
+    .filter((id) => id > 0);
 }
 
 /**

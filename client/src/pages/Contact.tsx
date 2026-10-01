@@ -231,13 +231,13 @@ export default function Contact() {
 
               <div className="space-y-2">
                 <label className="text-sm font-bold text-slate-700 ms-1">
-                  Email <span className="text-slate-400 text-xs font-normal">(pour recevoir le suivi de votre demande)</span>
+                  Email <span className="text-slate-400 text-xs font-normal">{t("contact.email_help", "(pour recevoir le suivi de votre demande)")}</span>
                 </label>
                 <input
                   {...form.register("email")}
                   type="email"
                   className="w-full px-5 py-3.5 rounded-2xl bg-slate-50 border border-slate-100 focus:outline-none focus:ring-4 focus:ring-primary/5 focus:bg-white focus:border-primary transition-all text-slate-900"
-                  placeholder="votre@email.com"
+                  placeholder={t("contact.email_placeholder", "votre@email.com")}
                 />
               </div>
 
@@ -347,7 +347,7 @@ export default function Contact() {
                             }
 
                           const items = selection.map(i => `${i.quantity} x ${i.name}`).join(", ");
-                          const text = `Bonjour, je souhaite demander un devis pour : ${items}`;
+                          const text = t("contact.whatsapp_quote_message", "Bonjour, je souhaite demander un devis pour : {{items}}", { items });
                           const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
                           const url = isMobile
                             ? `https://wa.me/21627903117?text=${encodeURIComponent(text)}`
@@ -364,10 +364,10 @@ export default function Contact() {
                 ) : (
                   <div className="text-center py-6">
                     <p className="text-sm text-slate-500 mb-4">
-                      Votre sélection est vide.
+                      {t("contact.selection_empty", "Votre panier est vide.")}
                     </p>
                     <p className="text-xs text-slate-400 mb-4">
-                      Explorez notre gamme complète de solutions d'emballage et de décoration.
+                      {t("contact.selection_empty_hint", "Explorez notre gamme complète de solutions d'emballage et de décoration.")}
                     </p>
                     <button
                       type="button"
@@ -375,7 +375,7 @@ export default function Contact() {
                       className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary text-white rounded-xl text-sm font-bold hover:bg-primary/90 transition-colors shadow-sm"
                     >
                       <ShoppingBag className="w-4 h-4" />
-                      Parcourir les produits
+                      {t("contact.browse_products", "Parcourir les produits")}
                     </button>
                   </div>
                 )}

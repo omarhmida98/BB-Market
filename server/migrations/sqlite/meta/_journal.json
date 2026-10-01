@@ -43,6 +43,20 @@
       "when": 1790778215648,
       "tag": "0005_analytics_order_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1790780400000,
+      "tag": "0006_homepage_sections",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1790800000000,
+      "tag": "0007_homepage_sections_i18n",
+      "breakpoints": true
     }
   ]
 }

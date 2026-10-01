@@ -209,6 +209,57 @@ export const pgWishlist = pgTable("wishlist", {
   uniqueIndex("uq_wishlist_user_product").on(t.userId, t.productId),
 ]);
 
+/**
+ * Homepage shelves, one row per horizontal strip of products (migration 0006).
+ *
+ * This table holds configuration, not catalogue data: it says *which* slice of
+ * the catalogue to show and in what order, and the actual products are read by
+ * the same bounded, filtered query the catalogue page uses. Nothing here stores
+ * a product id, so deleting or editing a product can never leave a shelf
+ * pointing at something that no longer exists.
+ *
+ * `max_products` is bounded in the schema as well as in Zod, because the bound is
+ * what keeps a shelf a preview rather than a full-catalogue download.
+ */
+export const pgHomepageSections = pgTable("homepage_sections", {
+  id: serial("id").primaryKey(),
+  // Free text per language, not translation keys: the admin writes the heading
+  // customers see, so each column holds that language as authored. `_fr` is the
+  // only NOT NULL one - it is the authoring default and the fallback base every
+  // other locale resolves to. Migration 0007 renames the old single-language
+  // `title`/`tile_*` columns to their `_fr` twins, moving existing content into
+  // French rather than discarding it.
+  titleFr: pgText("title_fr").notNull(),
+  titleEn: pgText("title_en"),
+  titleAr: pgText("title_ar"),
+  type: pgText("type").notNull().default("newest"),
+  category: pgText("category"),
+  maxPrice: pgDoublePrecision("max_price"),
+  maxProducts: pgInteger("max_products").notNull().default(10),
+  displayOrder: pgInteger("display_order").notNull().default(0),
+  enabled: boolean("enabled").notNull().default(true),
+  // Language-independent: the image and the destination are the same for every
+  // visitor; only the overlaid text is translated.
+  tileImageUrl: pgText("tile_image_url"),
+  tileTitleFr: pgText("tile_title_fr"),
+  tileTitleEn: pgText("tile_title_en"),
+  tileTitleAr: pgText("tile_title_ar"),
+  tileSubtitleFr: pgText("tile_subtitle_fr"),
+  tileSubtitleEn: pgText("tile_subtitle_en"),
+  tileSubtitleAr: pgText("tile_subtitle_ar"),
+  tileCtaLabelFr: pgText("tile_cta_label_fr"),
+  tileCtaLabelEn: pgText("tile_cta_label_en"),
+  tileCtaLabelAr: pgText("tile_cta_label_ar"),
+  tileHref: pgText("tile_href"),
+  createdAt: pgTimestamp("created_at").notNull().defaultNow(),
+  updatedAt: pgTimestamp("updated_at").defaultNow(),
+}, (t) => [
+  // Serves the only public query shape: enabled rows in display order. The id
+  // tiebreak keeps the order total so two shelves configured at the same position
+  // cannot swap places between requests.
+  index("idx_homepage_sections_enabled_order").on(t.enabled, t.displayOrder, t.id),
+]);
+
 export const pgSchema = {
   products: pgProducts,
   messages: pgMessages,
@@ -221,6 +272,7 @@ export const pgSchema = {
   orders: pgOrders,
   socialMediaEmbeds: pgSocialMediaEmbeds,
   wishlist: pgWishlist,
+  homepageSections: pgHomepageSections,
 };
 
 // --- SQLite Schema ---
@@ -381,6 +433,39 @@ export const sqliteWishlist = sqliteTable("wishlist", {
   sqliteUniqueIndex("uq_wishlist_user_product").on(t.userId, t.productId),
 ]);
 
+/**
+ * SQLite twin of `pgHomepageSections` (migration 0006). See that definition for
+ * the design; only the dialect-specific bits differ - booleans are integers with
+ * `mode: "boolean"`, and timestamps are epoch seconds.
+ */
+export const sqliteHomepageSections = sqliteTable("homepage_sections", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  titleFr: sqliteText("title_fr").notNull(),
+  titleEn: sqliteText("title_en"),
+  titleAr: sqliteText("title_ar"),
+  type: sqliteText("type").notNull().default("newest"),
+  category: sqliteText("category"),
+  maxPrice: real("max_price"),
+  maxProducts: integer("max_products").notNull().default(10),
+  displayOrder: integer("display_order").notNull().default(0),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(sql`1`),
+  tileImageUrl: sqliteText("tile_image_url"),
+  tileTitleFr: sqliteText("tile_title_fr"),
+  tileTitleEn: sqliteText("tile_title_en"),
+  tileTitleAr: sqliteText("tile_title_ar"),
+  tileSubtitleFr: sqliteText("tile_subtitle_fr"),
+  tileSubtitleEn: sqliteText("tile_subtitle_en"),
+  tileSubtitleAr: sqliteText("tile_subtitle_ar"),
+  tileCtaLabelFr: sqliteText("tile_cta_label_fr"),
+  tileCtaLabelEn: sqliteText("tile_cta_label_en"),
+  tileCtaLabelAr: sqliteText("tile_cta_label_ar"),
+  tileHref: sqliteText("tile_href"),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull().default(sql`(strftime('%s', 'now'))`),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).default(sql`(strftime('%s', 'now'))`),
+}, (t) => [
+  sqliteIndex("idx_homepage_sections_enabled_order").on(t.enabled, t.displayOrder, t.id),
+]);
+
 export const sqliteSchema = {
   products: sqliteProducts,
   messages: sqliteMessages,
@@ -393,4 +478,5 @@ export const sqliteSchema = {
   orders: sqliteOrders,
   socialMediaEmbeds: sqliteSocialMediaEmbeds,
   wishlist: sqliteWishlist,
+  homepageSections: sqliteHomepageSections,
 };

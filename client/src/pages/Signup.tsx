@@ -31,18 +31,18 @@ type SignupFormValues = InsertUser & { confirmPassword: string };
 
 const benefits = [
   {
-    title: "Quote-ready account",
-    description: "Save your information and move faster from selection to request.",
+    titleKey: "auth.signup_benefit_quote_title",
+    descriptionKey: "auth.signup_benefit_quote_desc",
     icon: BadgeCheck,
   },
   {
-    title: "Better follow-up",
-    description: "Keep your orders and conversations connected to one account.",
+    titleKey: "auth.signup_benefit_followup_title",
+    descriptionKey: "auth.signup_benefit_followup_desc",
     icon: BriefcaseBusiness,
   },
   {
-    title: "Priority flow",
-    description: "A cleaner path for returning customers and business requests.",
+    titleKey: "auth.signup_benefit_priority_title",
+    descriptionKey: "auth.signup_benefit_priority_desc",
     icon: ShieldCheck,
   },
 ];
@@ -57,9 +57,9 @@ export default function Signup() {
   const form = useForm<SignupFormValues>({
     resolver: zodResolver(
       insertUserSchema.extend({
-        fullName: z.string().min(1, "Nom complet requis"),
-        phone: z.string().min(8, "Numéro de téléphone invalide"),
-        confirmPassword: z.string().min(1, "Mot de passe requis"),
+        fullName: z.string().min(1, t("auth.full_name_required", "Nom complet requis")),
+        phone: z.string().min(8, t("auth.phone_invalid", "Numéro de téléphone invalide")),
+        confirmPassword: z.string().min(1, t("auth.password_required", "Mot de passe requis")),
       }),
     ),
     defaultValues: {
@@ -152,14 +152,14 @@ export default function Signup() {
                   const Icon = benefit.icon;
                   return (
                     <div
-                      key={benefit.title}
+                      key={benefit.titleKey}
                       className="rounded-2xl border border-white/70 bg-white/75 backdrop-blur-md p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)]"
                     >
                       <div className="mb-3 inline-flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
                         <Icon className="h-5 w-5" />
                       </div>
-                      <h3 className="text-sm font-bold text-slate-900">{benefit.title}</h3>
-                      <p className="mt-1 text-sm leading-6 text-slate-600">{benefit.description}</p>
+                      <h3 className="text-sm font-bold text-slate-900">{t(benefit.titleKey)}</h3>
+                      <p className="mt-1 text-sm leading-6 text-slate-600">{t(benefit.descriptionKey)}</p>
                     </div>
                   );
                 })}
@@ -338,7 +338,7 @@ export default function Signup() {
 
                     <div className="flex items-center gap-3 py-1 text-xs font-medium text-slate-400">
                       <div className="h-px flex-1 bg-slate-200" />
-                      <span>ou</span>
+                      <span>{t("auth.or", "ou")}</span>
                       <div className="h-px flex-1 bg-slate-200" />
                     </div>
 

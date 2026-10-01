@@ -1,6 +1,7 @@
 import { useMutation } from "@tanstack/react-query";
 import { api } from "@shared/routes";
 import type { InsertMessage } from "@shared/schema";
+import i18n from "@/lib/i18n";
 
 export function useSendMessage() {
   return useMutation({
@@ -14,7 +15,7 @@ export function useSendMessage() {
 
       if (!res.ok) {
         if (res.status === 401) {
-          throw new Error((await res.text()) || "Veuillez vous connecter pour passer une commande.");
+          throw new Error((await res.text()) || i18n.t("contact.login_required", "Veuillez vous connecter pour passer une commande."));
         }
         if (res.status === 400) {
           const error = api.messages.create.responses[400].parse(await res.json());

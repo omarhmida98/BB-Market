@@ -8,6 +8,7 @@ import { useSelection } from "@/hooks/use-selection";
 import { useToast } from "@/hooks/use-toast";
 import { useRemoveFromWishlist, useWishlist } from "@/hooks/use-wishlist";
 import type { WishlistItem } from "@shared/wishlist";
+import { formatMoney } from "@/lib/format";
 
 /**
  * The customer's saved products, inside the account page.
@@ -101,7 +102,7 @@ export function WishlistSection() {
  * item is to come back to it later. The row says so explicitly instead.
  */
 function WishlistRow({ item, index }: { item: WishlistItem; index: number }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { addToSelection, updateQuantity, selection } = useSelection();
   const { toast } = useToast();
   const remove = useRemoveFromWishlist();
@@ -182,12 +183,12 @@ function WishlistRow({ item, index }: { item: WishlistItem; index: number }) {
               up here without the customer doing anything. */}
           <div className="flex items-center gap-3 mt-1.5 flex-wrap text-sm">
             <span className="font-black text-primary text-lg">
-              {promotion.effectivePrice.toFixed(3)} DT
+              {formatMoney(promotion.effectivePrice, i18n.language)}
             </span>
             {promotion.status === "active" && (
               <>
                 <span className="text-muted-foreground line-through text-sm">
-                  {promotion.regularPrice.toFixed(3)} DT
+                  {formatMoney(promotion.regularPrice, i18n.language)}
                 </span>
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500 text-white text-[11px] font-bold">
                   {t("promotion.discount", "-{{percent}}%", { percent: promotion.discountPercent })}

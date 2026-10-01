@@ -40,22 +40,15 @@ export function log(message: string, source = "express") {
 app.use((req, res, next) => {
   const start = Date.now();
   const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined;
 
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
-
+  // The response body is deliberately NOT logged. These lines are the request
+  // audit trail, and /api responses include sanitized user records, message
+  // bodies and password-reset codes — dumping them to stdout would write
+  // tokens and customer data into the server log for anyone with log access.
   res.on("finish", () => {
     const duration = Date.now() - start;
     if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
-      log(logLine);
+      log(`${req.method} ${path} ${res.statusCode} in ${duration}ms`);
     }
   });
 
@@ -77,7 +70,7 @@ app.use((req, res, next) => {
   const spaIndex = path.join(PROJECT_ROOT, "dist", "public", "index.html");
   if (process.env.NODE_ENV === "production" && fs.existsSync(spaIndex)) {
     const spaRoot = path.dirname(spaIndex);
-    console.log(`[STATIC_SPA] Serving built client from: ${spaRoot}`);
+    console.log(`[STATIC_SPA] Serving built client`);
     app.use(express.static(spaRoot, { index: false }));
 
     // History fallback: wouter routes such as /checkout or /admin are

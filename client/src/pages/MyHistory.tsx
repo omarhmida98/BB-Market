@@ -10,6 +10,7 @@ import {
   Loader2, Clock, LogOut, MessagesSquare, CheckCircle, 
   Package, Trash2, KeyRound, History, User, ChevronLeft, UserPlus 
 } from "lucide-react";
+import { formatDate } from "@/lib/format";
 
 const activityTypeConfig: Record<string, { icon: any; labelKey: string; color: string }> = {
   login: { icon: LogOut, labelKey: "login", color: "text-green-500 bg-green-500/10 border-green-500/20" },
@@ -34,7 +35,7 @@ export default function MyHistory() {
     staleTime: 30000,
     refetchOnWindowFocus: false,
   });
-  const dateLocale = i18n.language.startsWith("ar") ? "ar-TN" : i18n.language.startsWith("en") ? "en-US" : "fr-FR";
+
 
   if (loadingUser) {
     return (
@@ -161,13 +162,13 @@ export default function MyHistory() {
                       </div>
                       <div className="text-end shrink-0">
                         <p className="text-sm font-medium text-slate-600 whitespace-nowrap">
-                          {activity.createdAt ? new Date(activity.createdAt).toLocaleDateString(dateLocale, {
+                          {activity.createdAt ? formatDate(activity.createdAt, i18n.language, {
                             day: '2-digit',
                             month: 'short',
                           }) : "—"}
                         </p>
                         <p className="text-[11px] text-slate-400 whitespace-nowrap">
-                          {activity.createdAt ? new Date(activity.createdAt).toLocaleTimeString(dateLocale, {
+                          {activity.createdAt ? formatDate(activity.createdAt, i18n.language, {
                             hour: '2-digit',
                             minute: '2-digit'
                           }) : ""}

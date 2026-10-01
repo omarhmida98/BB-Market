@@ -8,8 +8,9 @@ const __dirname = path.dirname(__filename);
 import { storage } from "./storage.js";
 import { api } from "shared/routes.js";
 import { z } from "zod";
-import { insertCategorySchema, insertOrderSchema, upsertSocialMediaEmbedSchema, insertSettingsSchema, computeDeliveryFee, SOCIAL_PLATFORMS, productQuerySchema, checkPromotion, type SocialPlatform } from "shared/schema.js";
+import { insertCategorySchema, insertOrderSchema, upsertSocialMediaEmbedSchema, insertSettingsSchema, computeDeliveryFee, SOCIAL_PLATFORMS, productQuerySchema, checkPromotion, homepageSectionInputSchema, homepageSectionPatchSchema, type SocialPlatform } from "shared/schema.js";
 import { resolvePromotion } from "shared/promotions.js";
+import { dbg } from "./debug.js";
 import { toCustomerOrder, toCustomerOrderSummary } from "shared/orders.js";
 import { analyticsQuerySchema } from "shared/analytics.js";
 import { getAnalyticsDashboard } from "./analytics.js";
@@ -121,14 +122,115 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.delete("/api/categories/:id", async (req, res) => {
+app.delete("/api/categories/:id", async (req, res) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
     const currentUser = req.user as any;
     if (!["admin", "superadmin"].includes(currentUser.role)) return res.sendStatus(403);
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Invalid category ID" });
     const success = await storage.deleteCategory(id);
-    return success ? res.sendStatus(204) : res.sendStatus(404);
+    return success ? res.sendStatus(204) : res.status(404);
+  });
+
+  // Homepage sections
+  //
+  // Two audiences, one configuration. The public read serves the homepage and
+  // returns each shelf with its products already resolved; the admin CRUD serves
+  // the panel with configuration only. The split matters for one specific reason:
+  // a disabled shelf must disappear from the public homepage but stay visible in
+  // the admin list, or "disabled" would be indistinguishable from "deleted".
+  //
+  // The public read is capped per shelf by the shelf's own `max_products`, which
+  // storage clamps again, and empty shelves are dropped server-side, so this
+  // endpoint cannot be widened by anything a caller sends.
+  app.get("/api/homepage-sections", async (_req, res) => {
+    try {
+      res.json(await storage.queryHomepageShelves());
+    } catch (error) {
+      console.error("[HOMEPAGE] shelves failed:", error);
+      res.status(500).json({ message: "Unable to load homepage sections" });
+    }
+  });
+
+  app.get("/api/admin/homepage-sections", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    const currentUser = req.user as any;
+    if (!["admin", "superadmin"].includes(currentUser.role)) return res.sendStatus(403);
+    try {
+      res.json(await storage.getHomepageSections(true));
+    } catch (error) {
+      console.error("[HOMEPAGE] admin list failed:", error);
+      res.status(500).json({ message: "Unable to load homepage sections" });
+    }
+  });
+
+  app.post("/api/homepage-sections", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    const currentUser = req.user as any;
+    if (!["admin", "superadmin"].includes(currentUser.role)) return res.sendStatus(403);
+    try {
+      const parsed = homepageSectionInputSchema.parse(req.body);
+      const section = await storage.createHomepageSection(parsed);
+      await storage.createUserActivity(currentUser.id, "homepage_section_create", section.titleFr);
+      res.status(201).json(section);
+    } catch (error: any) {
+      res.status(400).json({ message: error?.issues?.[0]?.message || error?.message || "Unable to create section" });
+    }
+  });
+
+  /**
+   * The patch is validated against the *merged* row, not on its own.
+   *
+   * A partial schema cannot know whether a section is still valid: switching the
+   * type to `category` without naming a category passes any "all fields optional"
+   * check and produces a shelf that silently renders nothing. Merging first and
+   * running the full `homepageSectionInputSchema` over the result means that case
+   * is rejected, while an unrelated edit to a `category` shelf that still carries
+   * a category name is accepted.
+   */
+  app.patch("/api/homepage-sections/:id", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    const currentUser = req.user as any;
+    if (!["admin", "superadmin"].includes(currentUser.role)) return res.sendStatus(403);
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Invalid section ID" });
+    try {
+      const patch = homepageSectionPatchSchema.parse(req.body);
+      const existing = await storage.getHomepageSection(id);
+      if (!existing) return res.sendStatus(404);
+      homepageSectionInputSchema.parse({ ...existing, ...patch });
+      const section = await storage.updateHomepageSection(id, patch);
+      if (!section) return res.sendStatus(404);
+      await storage.createUserActivity(currentUser.id, "homepage_section_update", section.titleFr);
+      res.json(section);
+    } catch (error: any) {
+      res.status(400).json({ message: error?.issues?.[0]?.message || error?.message || "Unable to update section" });
+    }
+  });
+
+  app.delete("/api/homepage-sections/:id", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    const currentUser = req.user as any;
+    if (!["admin", "superadmin"].includes(currentUser.role)) return res.sendStatus(403);
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Invalid section ID" });
+    const success = await storage.deleteHomepageSection(id);
+    if (success) {
+      await storage.createUserActivity(currentUser.id, "homepage_section_delete", `#${id}`);
+    }
+    return success ? res.sendStatus(204) : res.status(404);
+  });
+
+  app.post("/api/homepage-sections/reorder", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    const currentUser = req.user as any;
+    if (!["admin", "superadmin"].includes(currentUser.role)) return res.sendStatus(403);
+    try {
+      const { ids } = z.object({ ids: z.array(z.number().int().positive()).max(100) }).parse(req.body);
+      res.json(await storage.reorderHomepageSections(ids));
+    } catch (error: any) {
+      res.status(400).json({ message: error?.issues?.[0]?.message || error?.message || "Unable to reorder sections" });
+    }
   });
 
   // B&B Market orders / checkout
@@ -514,14 +616,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   const assetsDir = resolveAssetsDir();
-  console.log(`[STATIC_ASSETS] Serving attached_assets from: ${assetsDir}`);
+  console.log(`[STATIC_ASSETS] Serving attached_assets`);
   app.use("/attached_assets", express.static(assetsDir));
 
   // Uploads live outside dist/ on purpose. `npm run build` empties dist/, so
   // serving them from there would drop every image an admin had uploaded.
   const uploadsDir = resolveUploadsDir();
   fs.mkdirSync(uploadsDir, { recursive: true });
-  console.log(`[STATIC_UPLOADS] Serving /uploads from: ${uploadsDir}`);
+  console.log(`[STATIC_UPLOADS] Serving /uploads`);
   app.use("/uploads", express.static(uploadsDir));
 
   // ---------------------------------------------------------------------
@@ -633,9 +735,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       //  DÉDUCTION DU STOCK - Version ultra robuste
       // ============================================
       if (status === "approved") {
-        console.log(`📦 [STOCK] ========== DÉBUT TRAITEMENT COMMANDE #${id} ==========`);
-        console.log(`📦 [STOCK] selectedItems brut:`, message.selectedItems);
-        console.log(`📦 [STOCK] Type de selectedItems:`, typeof message.selectedItems);
+        dbg(`📦 [STOCK] ========== DÉBUT TRAITEMENT COMMANDE #${id} ==========`);
+        dbg(`📦 [STOCK] selectedItems brut:`, message.selectedItems);
+        dbg(`📦 [STOCK] Type de selectedItems:`, typeof message.selectedItems);
 
         if (message.selectedItems) {
           try {
@@ -646,14 +748,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             if (typeof rawData === 'string') {
               try {
                 selectedItems = JSON.parse(rawData);
-                console.log(`📦 [STOCK] Parse JSON réussi`);
+                dbg(`📦 [STOCK] Parse JSON réussi`);
               } catch (e) {
-                console.log(`📦 [STOCK] Erreur de parse JSON, tentative avec évaluation`);
+                dbg(`📦 [STOCK] Erreur de parse JSON, tentative avec évaluation`);
                 // Si c'est une chaîne qui ressemble à un tableau mais mal formaté
                 try {
                   selectedItems = eval(`(${rawData})`);
                 } catch (e2) {
-                  console.error(`[STOCK] Impossible de parser:`, rawData);
+                  console.error(`[STOCK] Impossible de parser les articles de la commande`);
                   selectedItems = null;
                 }
               }
@@ -662,11 +764,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             }
 
             if (!selectedItems) {
-              console.warn(`📦 [STOCK] selectedItems est null après parsing`);
+              dbg(`📦 [STOCK] selectedItems est null après parsing`);
             } else {
-              console.log(`📦 [STOCK] selectedItems après parsing:`, JSON.stringify(selectedItems, null, 2));
-              console.log(`📦 [STOCK] Type après parsing:`, typeof selectedItems);
-              console.log(`📦 [STOCK] Est un tableau?`, Array.isArray(selectedItems));
+              dbg(`📦 [STOCK] selectedItems après parsing:`, JSON.stringify(selectedItems, null, 2));
+              dbg(`📦 [STOCK] Type après parsing:`, typeof selectedItems);
+              dbg(`📦 [STOCK] Est un tableau?`, Array.isArray(selectedItems));
 
               // Étape 2: Normaliser en tableau
               let itemsArray = [];
@@ -689,7 +791,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                 }
               }
 
-              console.log(`📦 [STOCK] Nombre d'articles après normalisation:`, itemsArray.length);
+              dbg(`📦 [STOCK] Nombre d'articles après normalisation:`, itemsArray.length);
 
               let stockUpdated = false;
               const stockDetails = [];
@@ -698,8 +800,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               // Étape 3: Traiter chaque item
               for (let index = 0; index < itemsArray.length; index++) {
                 const item = itemsArray[index];
-                console.log(`📦 [STOCK] --- Article ${index + 1}/${itemsArray.length} ---`);
-                console.log(`📦 [STOCK] Item brut:`, JSON.stringify(item, null, 2));
+                dbg(`📦 [STOCK] --- Article ${index + 1}/${itemsArray.length} ---`);
+                dbg(`📦 [STOCK] Item brut:`, JSON.stringify(item, null, 2));
 
                 // Extraire l'ID du produit (chercher dans toutes les propriétés possibles)
                 let productId = null;
@@ -755,7 +857,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                   quantity = 1;
                 }
 
-                console.log(`📦 [STOCK] ID extrait: ${productId}, Quantité extraite: ${quantity}`);
+                dbg(`📦 [STOCK] ID extrait: ${productId}, Quantité extraite: ${quantity}`);
 
                 if (!productId) {
                   stockErrors.push(`Article ${index + 1} sans ID: ${JSON.stringify(item)}`);
@@ -784,7 +886,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                 if (updatedProduct) {
                   stockUpdated = true;
                   stockDetails.push(`${product.name}: ${currentQuantity} → ${newQuantity} (${quantity} déduits)`);
-                  console.log(`📦 [STOCK] ${product.name}: ${currentQuantity} → ${newQuantity}`);
+                  dbg(`📦 [STOCK] ${product.name}: ${currentQuantity} → ${newQuantity}`);
 
                   // Envoyer une alerte si le stock devient faible
                   if (newQuantity <= 10) {
@@ -801,12 +903,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               }
 
               // Logger les résultats
-              console.log(`📦 [STOCK] ========== RÉSULTATS ==========`);
+              dbg(`📦 [STOCK] ========== RÉSULTATS ==========`);
               if (stockDetails.length > 0) {
-                console.log(`📦 [STOCK] Mises à jour effectuées:`, stockDetails);
+                dbg(`📦 [STOCK] Mises à jour effectuées:`, stockDetails);
               }
               if (stockErrors.length > 0) {
-                console.warn(`📦 [STOCK] Erreurs:`, stockErrors);
+                console.warn("[STOCK] Stock deduction errors:", stockErrors);
               }
 
               if (stockUpdated) {
@@ -815,22 +917,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
                   "stock_deducted",
                   `Stock déduit pour la commande #${id} (${itemsArray.length} article(s)): ${stockDetails.join('; ')}`
                 );
-                console.log(`📦 [STOCK] Stock mis à jour avec succès pour la commande #${id}`);
+                dbg(`📦 [STOCK] Stock mis à jour avec succès pour la commande #${id}`);
               } else {
-                console.warn(`📦 [STOCK] Aucun stock mis à jour pour la commande #${id}`);
+                dbg(`📦 [STOCK] Aucun stock mis à jour pour la commande #${id}`);
                 if (stockErrors.length > 0) {
-                  console.warn(`📦 [STOCK] Erreurs:`, stockErrors);
+                  console.warn("[STOCK] Stock deduction errors:", stockErrors);
                 }
               }
             }
           } catch (parseError) {
             console.error(`[STOCK] Erreur lors du traitement:`, parseError);
-            console.error(`[STOCK] selectedItems contenu:`, message.selectedItems);
           }
         } else {
-          console.warn(`📦 [STOCK] selectedItems est null ou vide pour la commande #${id}`);
+          dbg(`📦 [STOCK] selectedItems est null ou vide pour la commande #${id}`);
         }
-        console.log(`📦 [STOCK] ========== FIN TRAITEMENT COMMANDE #${id} ==========`);
+        dbg(`📦 [STOCK] ========== FIN TRAITEMENT COMMANDE #${id} ==========`);
       }
 
       // Send rejection email if status is "rejected"
@@ -1084,7 +1185,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       await storage.createUserActivity(currentUser.id, "product_update", `Produit modifié: ${product.name}`);
       res.json(product);
     } catch (err) {
-      console.error(`[DEBUG-PATCH] Error during update:`, err);
+      console.error("[PRODUCTS] Product update failed:", err);
       res.status(500).json({ message: "Internal server error" });
     }
   });
@@ -1875,17 +1976,17 @@ app.get('/api/debug/message/:id', async (req, res) => {
         parsedType = typeof message.selectedItems;
         try {
           parsed = JSON.parse(message.selectedItems);
-          console.log('Parse JSON réussi');
+          dbg('Parse JSON réussi');
         } catch (e: any) {
           parseError = e.message;
-          console.log('Erreur JSON:', e.message);
+          dbg('Erreur JSON:', e.message);
           // Essayer avec eval
           try {
             parsed = eval(`(${message.selectedItems})`);
-            console.log('Parse avec eval réussi');
+            dbg('Parse avec eval réussi');
           } catch (e2: any) {
             parseError = e2.message;
-            console.log('Erreur eval:', e2.message);
+            dbg('Erreur eval:', e2.message);
           }
         }
       }
@@ -1905,7 +2006,7 @@ app.get('/api/debug/message/:id', async (req, res) => {
         read: message.read
       });
     } catch (err) {
-      console.error('Erreur dans debug:', err);
+      console.error("[MESSAGES] Debug message parse failed:", err);
       res.status(500).json({ error: String(err) });
     }
   });

@@ -62,6 +62,8 @@ export function ProductCard({ product }: ProductCardProps) {
         <img
           src={product.imageUrl}
           alt={product.name}
+          loading="lazy"
+          decoding="async"
           className="w-full h-full object-contain transform group-hover:scale-105 transition-transform duration-700 ease-in-out"
         />
         <div className="absolute top-4 start-4 z-20 flex flex-col items-start gap-2">

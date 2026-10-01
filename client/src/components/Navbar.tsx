@@ -95,7 +95,7 @@ export function Navbar() {
             ))}
             <div className="flex items-center justify-between px-2 py-2">
               <LanguageSwitcher />
-              {isAdmin && <Link href="/admin" onClick={() => setIsOpen(false)} className="text-sm font-bold text-primary">Admin</Link>}
+              {isAdmin && <Link href="/admin" onClick={() => setIsOpen(false)} className="text-sm font-bold text-primary">{t("nav.admin", "Admin")}</Link>}
               {user ? (
                 <>
                   <Link href="/account" onClick={() => setIsOpen(false)} className="text-sm font-semibold">

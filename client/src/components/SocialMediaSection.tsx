@@ -2,6 +2,7 @@ import { SOCIAL_PLATFORMS, type SocialPlatform } from "@shared/schema";
 import { useTranslation } from "react-i18next";
 import { useSocialMedia } from "@/hooks/use-social-media";
 import { SocialEmbed, platformIcon } from "@/components/SocialEmbed";
+import { SOCIAL_MEDIA_ANCHOR_ID } from "@/lib/anchorScroll";
 
 const PLATFORM_LABEL: Record<SocialPlatform, string> = {
   instagram: "Instagram",
@@ -26,7 +27,11 @@ export function SocialMediaSection() {
   };
 
   return (
-    <section className="py-20" id="social-media">
+    // scroll-mt-20 clears the fixed h-20 navbar so the heading is not hidden
+    // underneath it; tabIndex={-1} lets the anchor handler move focus here for
+    // keyboard/screen-reader users, and outline-none drops the ring that a
+    // programmatic focus would otherwise paint around the whole section.
+    <section id={SOCIAL_MEDIA_ANCHOR_ID} tabIndex={-1} className="py-20 scroll-mt-20 outline-none">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="mb-10">
           <p className="text-[#ff6200] font-black uppercase tracking-[.22em] text-xs mb-2">B&B MARKET</p>

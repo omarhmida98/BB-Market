@@ -23,6 +23,7 @@ import { OrderStatusTimeline, OrderStatusBadge } from "@/components/OrderStatusT
 import { ReorderButton } from "@/components/ReorderButton";
 import { OrderWhatsAppButton } from "@/components/OrderWhatsAppButton";
 import { Button } from "@/components/ui/button";
+import { formatDate as formatDateUtil, formatMoney as formatMoneyUtil } from "@/lib/format";
 
 /**
  * One customer's order, in full.
@@ -46,13 +47,10 @@ export default function OrderDetail() {
 
   const { data: order, isLoading, error } = useMyOrder(validId ? orderId : null);
 
-  const dateLocale =
-    i18n.language.startsWith("ar") ? "ar-TN" : i18n.language.startsWith("en") ? "en-US" : "fr-FR";
-
-  const formatMoney = (value: number) => `${Number(value || 0).toFixed(3)} DT`;
+  const formatMoney = (value: number) => formatMoneyUtil(value, i18n.language);
   const formatDateTime = (iso: string | null) =>
     iso
-      ? new Date(iso).toLocaleString(dateLocale, {
+      ? formatDateUtil(iso, i18n.language, {
           day: "2-digit",
           month: "2-digit",
           year: "numeric",

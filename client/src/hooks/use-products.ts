@@ -95,11 +95,18 @@ export function useProducts(input: ProductQueryInput = {}) {
 /**
  * The newest products for the homepage. Bounded query, not a `slice()` of the
  * whole catalogue.
+ *
+ * `enabled` exists for the fallback case: the homepage only needs this strip when
+ * no admin-configured shelf returned anything, and firing the request on every
+ * visit just to discard it would waste a round trip on the normal path. React
+ * Query evaluates `enabled` on every render, so this can be switched on as soon
+ * as the shelves resolve.
  */
-export function useFeaturedProducts(limit = 6) {
+export function useFeaturedProducts(limit = 6, options: { enabled?: boolean } = {}) {
   return useQuery<ProductListResponse>({
     queryKey: ["/api/products", buildProductQuery({ limit, sort: "newest" })],
     queryFn: () => fetchProducts(buildProductQuery({ limit, sort: "newest" })),
+    enabled: options.enabled ?? true,
   });
 }
 

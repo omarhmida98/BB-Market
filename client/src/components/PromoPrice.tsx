@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Tag, Clock, CheckCircle2, XCircle } from "lucide-react";
 import { resolvePromotion, type PromotionCandidate, type PromotionStatus } from "@shared/promotions";
+import { formatDate, formatMoney } from "@/lib/format";
 
 /**
  * Renders a product price, honouring whatever promotion is live right now.
@@ -26,7 +27,7 @@ export function PromoPrice({
   size?: "sm" | "default" | "lg";
   showBadge?: boolean;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -51,7 +52,9 @@ export function PromoPrice({
         ? "text-sm font-bold"
         : "text-2xl font-black";
 
-  const format = (value: number) => `${value.toFixed(3)} DT`;
+  // The shelf card and the detail page share this renderer, so a price is
+  // grouped and decimal-separated in the reader's locale in both places.
+  const format = (value: number) => formatMoney(value, i18n.language);
 
   return (
     <div className="flex flex-col gap-1">
@@ -105,7 +108,7 @@ export function PromoPrice({
         <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
           <CheckCircle2 className="w-3.5 h-3.5" />
           {t("promotion.ends_at", "Offre valide jusqu'au {{date}}", {
-            date: new Date(promoEnd).toLocaleDateString(undefined, {
+            date: formatDate(promoEnd, i18n.language, {
               day: "2-digit",
               month: "2-digit",
               year: "numeric",

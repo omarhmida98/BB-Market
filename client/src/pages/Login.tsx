@@ -30,18 +30,18 @@ const ADMIN_EMAILS = ["bbmarket26@gmail.com", "omar.hmida.lgl@gmail.com"];
 
 const featureCards = [
   {
-    title: "Secure access",
-    description: "Accès sécurisé à votre compte B&B Market et à vos commandes.",
+    titleKey: "auth.login_feature_secure_title",
+    descriptionKey: "auth.login_feature_secure_desc",
     icon: ShieldCheck,
   },
   {
-    title: "Fast ordering",
-    description: "Ajoutez vos produits au panier et finalisez votre commande rapidement.",
+    titleKey: "auth.login_feature_fast_title",
+    descriptionKey: "auth.login_feature_fast_desc",
     icon: Sparkles,
   },
   {
-    title: "Client support",
-    description: "Retrouvez vos informations et le suivi de vos commandes.",
+    titleKey: "auth.login_feature_support_title",
+    descriptionKey: "auth.login_feature_support_desc",
     icon: Globe,
   },
 ];
@@ -126,14 +126,14 @@ export default function Login() {
                   const Icon = feature.icon;
                   return (
                     <div
-                      key={feature.title}
+                      key={feature.titleKey}
                       className="rounded-2xl border border-white/70 bg-white/75 backdrop-blur-md p-4 shadow-[0_10px_30px_rgba(15,23,42,0.05)]"
                     >
                       <div className="mb-3 inline-flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
                         <Icon className="h-5 w-5" />
                       </div>
-                      <h3 className="text-sm font-bold text-slate-900">{feature.title}</h3>
-                      <p className="mt-1 text-sm leading-6 text-slate-600">{feature.description}</p>
+                      <h3 className="text-sm font-bold text-slate-900">{t(feature.titleKey)}</h3>
+                      <p className="mt-1 text-sm leading-6 text-slate-600">{t(feature.descriptionKey)}</p>
                     </div>
                   );
                 })}
@@ -290,7 +290,7 @@ export default function Login() {
 
                     <div className="flex items-center gap-3 py-1 text-xs font-medium text-slate-400">
                       <div className="h-px flex-1 bg-slate-200" />
-                      <span>ou</span>
+                      <span>{t("auth.or", "ou")}</span>
                       <div className="h-px flex-1 bg-slate-200" />
                     </div>
 

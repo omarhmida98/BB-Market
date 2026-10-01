@@ -5,6 +5,7 @@ import pg from "pg";
 import Database from "better-sqlite3";
 import { pgSchema, sqliteSchema } from "shared/db-schema.js";
 import { resolveDbTarget } from "./db-target.js";
+import { dbg } from "./debug.js";
 
 const target = resolveDbTarget();
 
@@ -98,7 +99,7 @@ if (target.dialect === "postgresql") {
       "If you really intend SQLite in production, set ALLOW_SQLITE_IN_PRODUCTION=1.",
     );
   }
-  console.log(`[DEBUG-DB] Database will be opened exactly at: ${target.sqlitePath}`);
+  dbg(`[DB] SQLite database file: ${target.sqlitePath}`);
   const sqlite = new Database(target.sqlitePath!);
   sqliteHandle = sqlite;
 
@@ -140,4 +141,4 @@ if (target.dialect === "postgresql") {
   schema = sqliteSchema;
 }
 
-export const { products, messages, users, promos, stickerCatalogs, settings, userActivities, categories, orders, socialMediaEmbeds, wishlist } = schema;
+export const { products, messages, users, promos, stickerCatalogs, settings, userActivities, categories, orders, socialMediaEmbeds, wishlist, homepageSections } = schema;

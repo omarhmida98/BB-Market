@@ -46,7 +46,7 @@ const envPath = resolveEnvFile();
 
 if (envPath) {
   config({ path: envPath, override: true });
-  console.log(`[env] loaded ${envPath}`);
+  console.log(`[env] loaded ${path.basename(envPath)}`);
 } else {
   // Not fatal: on the OVH server the values are injected by systemd's
   // EnvironmentFile, so there is no env file to read at all.

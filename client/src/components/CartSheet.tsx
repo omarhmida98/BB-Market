@@ -11,6 +11,7 @@ import { ShoppingBag, X, Trash2, ArrowRight, Minus, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Link } from "wouter";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { formatMoney } from "@/lib/format";
 
 interface CartSheetProps {
     open: boolean;
@@ -18,7 +19,7 @@ interface CartSheetProps {
 }
 
 export function CartSheet({ open, onOpenChange }: CartSheetProps) {
-    const { t } = useTranslation();
+    const { t, i18n } = useTranslation();
     const { selection, count, totalItems, removeFromSelection, updateQuantity, clearSelection } = useSelection();
     const totalPrice = selection.reduce((sum, item) => sum + Number(item.price || 0) * item.quantity, 0);
 
@@ -93,7 +94,7 @@ export function CartSheet({ open, onOpenChange }: CartSheetProps) {
                                         <p className="text-xs text-slate-500 line-clamp-2 mt-1 mb-2">
                                             {item.description}
                                         </p>
-                                        <div className="text-sm font-black text-primary">{Number(item.price || 0).toFixed(3)} DT</div>
+                                        <div className="text-sm font-black text-primary">{formatMoney(item.price ?? 0, i18n.language)}</div>
 
                                         <div className="flex items-center justify-between mt-auto gap-4">
                                             <span className="text-[10px] font-medium text-slate-400 whitespace-nowrap">
@@ -105,7 +106,7 @@ export function CartSheet({ open, onOpenChange }: CartSheetProps) {
                                                     onClick={() => updateQuantity(item.id, item.type, item.quantity - 1)}
                                                     className="w-7 h-7 flex items-center justify-center rounded-md bg-white border border-slate-200 text-slate-600 hover:text-primary hover:border-primary/30 transition-all active:scale-95 disabled:opacity-40"
                                                     disabled={item.quantity <= 1}
-                                                    title={t("product_card.remove")}
+                                                    title={t("product_detail.decrease_quantity", "Diminuer la quantité")}
                                                 >
                                                     <Minus className="w-4 h-4" />
                                                 </button>
@@ -115,7 +116,7 @@ export function CartSheet({ open, onOpenChange }: CartSheetProps) {
                                                 <button
                                                     onClick={() => updateQuantity(item.id, item.type, item.quantity + 1)}
                                                     className="w-7 h-7 flex items-center justify-center rounded-md bg-white border border-slate-200 text-slate-600 hover:text-primary hover:border-primary/30 transition-all active:scale-95"
-                                                    title={t("product_card.select")}
+                                                    title={t("product_detail.increase_quantity", "Augmenter la quantité")}
                                                 >
                                                     <Plus className="w-4 h-4" />
                                                 </button>
@@ -144,7 +145,7 @@ export function CartSheet({ open, onOpenChange }: CartSheetProps) {
                         </div>
 
                         <div className="flex items-center justify-between mb-6 text-lg font-black">
-                            <span>Total</span><span className="text-primary">{totalPrice.toFixed(3)} DT</span>
+                            <span>{t("checkout.total")}</span><span className="text-primary">{formatMoney(totalPrice, i18n.language)}</span>
                         </div>
 
                         <div className="space-y-3">

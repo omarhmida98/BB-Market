@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
 import { Camera, RotateCcw, Check, X, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -16,6 +17,7 @@ interface CameraCaptureProps {
 }
 
 export function CameraCapture({ isOpen, onClose, onCapture }: CameraCaptureProps) {
+  const { t } = useTranslation();
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -51,16 +53,16 @@ export function CameraCapture({ isOpen, onClose, onCapture }: CameraCaptureProps
     } catch (err: any) {
       console.error("[CameraCapture] Error accessing camera:", err);
       if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
-        setError("Accès à la caméra refusé. Veuillez autoriser l'accès à la caméra dans les paramètres de votre navigateur.");
+        setError(t("camera.error_permission_denied", "Accès à la caméra refusé. Veuillez autoriser l'accès à la caméra dans les paramètres de votre navigateur."));
       } else if (err.name === "NotFoundError") {
-        setError("Aucune caméra trouvée sur cet appareil.");
+        setError(t("camera.error_not_found", "Aucune caméra trouvée sur cet appareil."));
       } else {
-        setError("Impossible d'accéder à la caméra. Vérifiez que vous utilisez un appareil avec caméra.");
+        setError(t("camera.error_generic", "Impossible d'accéder à la caméra. Vérifiez que vous utilisez un appareil avec caméra."));
       }
     } finally {
       setIsLoading(false);
     }
-  }, [facingMode]);
+  }, [facingMode, t]);
 
   useEffect(() => {
     if (isOpen) {
@@ -155,7 +157,9 @@ export function CameraCapture({ isOpen, onClose, onCapture }: CameraCaptureProps
           <div className="flex items-center justify-between">
             <DialogTitle className="text-xl font-bold text-white flex items-center gap-2">
               <Camera className="w-5 h-5 text-primary" />
-              {capturedImage ? "Photo capturée" : "Prendre une photo"}
+              {capturedImage
+                ? t("camera.photo_captured", "Photo capturée")
+                : t("camera.take_photo", "Prendre une photo")}
             </DialogTitle>
             <button
               onClick={handleClose}
@@ -173,7 +177,7 @@ export function CameraCapture({ isOpen, onClose, onCapture }: CameraCaptureProps
               <div className="absolute inset-0 flex items-center justify-center bg-slate-900/80 z-20">
                 <div className="text-center">
                   <Loader2 className="w-10 h-10 animate-spin text-primary mx-auto mb-3" />
-                  <p className="text-sm text-slate-400">Initialisation de la caméra...</p>
+                  <p className="text-sm text-slate-400">{t("camera.initializing", "Initialisation de la caméra...")}</p>
                 </div>
               </div>
             )}
@@ -189,7 +193,7 @@ export function CameraCapture({ isOpen, onClose, onCapture }: CameraCaptureProps
                     variant="outline"
                     className="border-white/10 text-white hover:bg-white/10 rounded-xl"
                   >
-                    Réessayer
+                    {t("camera.retry", "Réessayer")}
                   </Button>
                 </div>
               </div>
@@ -220,7 +224,7 @@ export function CameraCapture({ isOpen, onClose, onCapture }: CameraCaptureProps
                 >
                   <img
                     src={capturedImage}
-                    alt="Capture"
+                    alt={t("camera.capture_alt", "Capture")}
                     className="w-full h-full object-contain bg-black"
                   />
                 </motion.div>
@@ -263,14 +267,14 @@ export function CameraCapture({ isOpen, onClose, onCapture }: CameraCaptureProps
                   className="flex-1 h-12 rounded-xl border-white/10 text-white hover:bg-white/10 font-bold"
                 >
                   <RotateCcw className="w-4 h-4 me-2" />
-                  Reprendre
+                  {t("camera.retake", "Reprendre")}
                 </Button>
                 <Button
                   onClick={confirmCapture}
                   className="flex-1 h-12 rounded-xl bg-primary hover:bg-primary/90 font-bold"
                 >
                   <Check className="w-4 h-4 me-2" />
-                  Utiliser cette photo
+                  {t("camera.use_photo", "Utiliser cette photo")}
                 </Button>
               </div>
             )}
@@ -278,7 +282,7 @@ export function CameraCapture({ isOpen, onClose, onCapture }: CameraCaptureProps
 
           {!capturedImage && !error && (
             <p className="text-center text-xs text-slate-500 mt-4">
-              Appuyez sur le cercle pour capturer la photo
+              {t("camera.hint", "Appuyez sur le cercle pour capturer la photo")}
             </p>
           )}
         </div>

@@ -51,9 +51,10 @@ const Admin = lazy(() => import("@/pages/AdminMarket"));
  * surrounding header and footer do not visibly reflow when the chunk lands.
  */
 function RouteFallback() {
+  const { t } = useTranslation();
   return (
     <div className="mx-auto w-full max-w-7xl px-4 py-10" role="status" aria-busy="true">
-      <span className="sr-only">Loading</span>
+      <span className="sr-only">{t("common.loading", "Chargement...")}</span>
       <Skeleton className="h-8 w-56" />
       <Skeleton className="mt-4 h-4 w-80" />
       <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">

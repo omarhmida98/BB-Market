@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Tag, Percent, AlertTriangle } from "lucide-react";
 import { resolvePromotion, validatePromotion } from "@shared/promotions";
+import { formatMoney } from "@/lib/format";
 
 /**
  * Promotion inputs plus a live preview, shared by the admin create form and the
@@ -62,7 +63,7 @@ export function PromotionFields({
   onChange: (next: PromotionFormValues) => void;
   idPrefix?: string;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
 
   const errors = useMemo(
     () => validatePromotion({ price: regularPrice, ...values }),
@@ -166,20 +167,20 @@ export function PromotionFields({
         </span>
         <span className="text-sm">
           <span className="text-muted-foreground">{t("promotion.regular_price", "Prix normal")}: </span>
-          <span className="font-bold line-through">{preview.regularPrice.toFixed(3)} DT</span>
+          <span className="font-bold line-through">{formatMoney(preview.regularPrice, i18n.language)}</span>
         </span>
         {preview.status === "active" && (
           <>
             <span className="text-sm">
               <span className="text-muted-foreground">{t("promotion.promo_price", "Prix promotionnel")}: </span>
-              <span className="font-black text-red-600">{preview.effectivePrice.toFixed(3)} DT</span>
+              <span className="font-black text-red-600">{formatMoney(preview.effectivePrice, i18n.language)}</span>
             </span>
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500 text-white text-[10px] font-black">
               <Percent className="w-3 h-3" />-{preview.discountPercent}%
             </span>
             <span className="text-xs text-muted-foreground">
-              {t("promotion.preview_discount", "Économie : {{amount}} DT (-{{percent}}%)", {
-                amount: savings.toFixed(3),
+              {t("promotion.preview_discount", "Économie : {{amount}} (-{{percent}}%)", {
+                amount: formatMoney(savings, i18n.language),
                 percent: preview.discountPercent,
               })}
             </span>

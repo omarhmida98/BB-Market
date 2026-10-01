@@ -1,6 +1,7 @@
 import { CredentialResponse, GoogleLogin } from "@react-oauth/google";
 import { Loader2 } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -11,11 +12,12 @@ type GoogleSignInButtonProps = {
 
 export function GoogleSignInButton({ onAuthenticated }: GoogleSignInButtonProps) {
   const { toast } = useToast();
+  const { t } = useTranslation();
   const [isLoading, setIsLoading] = useState(false);
 
   const handleSuccess = async (response: CredentialResponse) => {
     if (!response.credential) {
-      toast({ variant: "destructive", title: "Connexion Google impossible" });
+      toast({ variant: "destructive", title: t("auth.google_error_title", "Connexion Google impossible") });
       return;
     }
 
@@ -28,8 +30,8 @@ export function GoogleSignInButton({ onAuthenticated }: GoogleSignInButtonProps)
     } catch (error) {
       toast({
         variant: "destructive",
-        title: "Connexion Google impossible",
-        description: error instanceof Error ? error.message : "Veuillez réessayer.",
+        title: t("auth.google_error_title", "Connexion Google impossible"),
+        description: error instanceof Error ? error.message : t("auth.google_error_retry", "Veuillez réessayer."),
       });
     } finally {
       setIsLoading(false);
@@ -46,7 +48,7 @@ export function GoogleSignInButton({ onAuthenticated }: GoogleSignInButtonProps)
 
   return (
     <div className="flex justify-center">
-      <GoogleLogin onSuccess={handleSuccess} onError={() => toast({ variant: "destructive", title: "Connexion Google annulée" })} />
+      <GoogleLogin onSuccess={handleSuccess} onError={() => toast({ variant: "destructive", title: t("auth.google_error_cancelled", "Connexion Google annulée") })} />
     </div>
   );
 }

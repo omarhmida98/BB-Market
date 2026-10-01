@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Facebook, Instagram, ExternalLink } from "lucide-react";
 import { FaTiktok } from "react-icons/fa";
 import type { SocialPlatform } from "@shared/schema";
@@ -118,6 +119,7 @@ function FacebookEmbed({ url }: { url: string }) {
 }
 
 function ExternalLinkCard({ url }: { url: string }) {
+  const { t } = useTranslation();
   return (
     <a
       href={url}
@@ -126,7 +128,7 @@ function ExternalLinkCard({ url }: { url: string }) {
       className="flex flex-col items-center justify-center gap-3 h-full min-h-[220px] p-6 text-center rounded-2xl border border-border bg-card/60 hover:border-[#ff6200]/50 transition-colors"
     >
       <ExternalLink className="w-7 h-7 text-[#ff6200]" />
-      <span className="text-sm font-bold">Voir la publication</span>
+      <span className="text-sm font-bold">{t("social.view_post", "Voir la publication")}</span>
       <span className="text-xs text-muted-foreground break-all line-clamp-2">{url}</span>
     </a>
   );

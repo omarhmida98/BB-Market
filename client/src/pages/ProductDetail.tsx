@@ -7,6 +7,7 @@ import { motion } from "framer-motion";
 import NotFound from "./not-found";
 import { ImageViewerModal } from "@/components/ImageViewerModal";
 import { PromoPrice } from "@/components/PromoPrice";
+import { AddToCart } from "@/components/AddToCart";
 import { FavoriteButton } from "@/components/FavoriteButton";
 import { useState } from "react";
 
@@ -89,9 +90,12 @@ export default function ProductDetail() {
                     <p>{product.description}</p>
                   </div>
 
+                  {/* Primary purchase action, using the shared cart store. */}
+                  <AddToCart product={product} />
+
                   {/* `end-*` so the button follows the RTL flip and sits opposite
                       the category pill. */}
-                  <div className="flex justify-end">
+                  <div className="flex justify-end mt-5">
                     <FavoriteButton product={product} variant="inline" size="lg" />
                   </div>
 

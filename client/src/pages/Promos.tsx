@@ -216,7 +216,7 @@ export default function Promos() {
 
                                     <div className="p-8">
                                         <h3 className="text-xl font-bold text-slate-900 mb-3 group-hover:text-primary transition-colors line-clamp-1">
-                                            {promo.productName || "Promotion Flash"}
+                                            {promo.productName || t("promos.flash_fallback", "Promotion Flash")}
                                         </h3>
                                         <p className="text-slate-500 text-sm mb-8 line-clamp-2 leading-relaxed h-10">
                                             {promo.description || t("promos.subtitle")}

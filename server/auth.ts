@@ -10,6 +10,7 @@ import { storage } from "./storage.js";
 import { User as SelectUser } from "shared/schema.js";
 import { sendWelcomeEmail } from "./email.js";
 import { resolvePublicRegistrationRole } from "./roles.js";
+import { dbg } from "./debug.js";
 
 const scryptAsync = promisify(scrypt);
 const MemoryStore = createMemoryStore(session);
@@ -22,28 +23,27 @@ export async function hashPassword(password: string) {
 
 export async function comparePasswords(supplied: string, stored: string | null | undefined) {
     if (typeof stored !== "string" || stored.length === 0) {
-        console.error(`[DEBUG-AUTH] Mot de passe stocké invalide ou absent`);
+        dbg("[AUTH] Stored password is missing");
         return false;
     }
 
     try {
-        console.log(`[DEBUG-AUTH] Comparaison: Fourni (${supplied.length} chars) vs Stocké (${stored.length} chars)`);
         const [hashed, salt] = stored.split(".");
         if (!hashed || !salt || hashed.length !== 128) {
-            console.error(`[DEBUG-AUTH] Format invalide !`);
+            dbg("[AUTH] Stored password hash has an invalid format");
             return false;
         }
         const hashedBuf = Buffer.from(hashed, "hex");
         if (hashedBuf.length !== 64) {
-            console.error(`[DEBUG-AUTH] Hash invalide !`);
+            dbg("[AUTH] Stored password hash has an invalid length");
             return false;
         }
         const suppliedBuf = (await scryptAsync(supplied, salt, 64)) as Buffer;
         const match = timingSafeEqual(hashedBuf, suppliedBuf);
-        console.log(`[DEBUG-AUTH] Result: ${match ? 'MATCH' : 'NO_MATCH'}`);
+        dbg(`[AUTH] Password match: ${match}`);
         return match;
     } catch (err) {
-        console.error(`[DEBUG-AUTH] Erreur lors de la comparaison des mots de passe:`, err);
+        console.error("[AUTH] Password comparison error:", err);
         return false;
     }
 }
@@ -118,26 +118,26 @@ export function setupAuth(app: Express) {
     passport.use(
         new LocalStrategy(async (usernameOrEmail, password, done) => {
             try {
-                console.log(`[DEBUG-AUTH] Tentative de connexion pour identifiant: "${usernameOrEmail}"`);
+                dbg(`[AUTH] Login attempt for: "${usernameOrEmail}"`);
 
                 // Try finding by username first
                 let user = await storage.getUserByUsername(usernameOrEmail);
-                if (user) console.log(`[DEBUG-AUTH] Utilisateur trouvé par username: ${user.username}`);
+                if (user) dbg(`[AUTH] User found by username: ${user.username}`);
 
                 // If not found, try finding by email
                 if (!user) {
                     user = await storage.getUserByEmail(usernameOrEmail);
-                    if (user) console.log(`[DEBUG-AUTH] Utilisateur trouvé par email: ${user.email} (Username: ${user.username})`);
+                    if (user) dbg(`[AUTH] User found by email: ${user.email} (username: ${user.username})`);
                 }
 
                 if (!user) {
-                    console.warn(`[DEBUG-AUTH] Aucun utilisateur trouvé avec l'identifiant: "${usernameOrEmail}"`);
+                    dbg(`[AUTH] No user for identifier: "${usernameOrEmail}"`);
                     return done(null, false);
                 }
 
                 const isMatch = await comparePasswords(password, user.password);
                 if (!isMatch) {
-                    console.warn(`[DEBUG-AUTH] Mot de passe incorrect pour: ${user.username}`);
+                    dbg(`[AUTH] Incorrect password for: ${user.username}`);
                     return done(null, false);
                 }
 
@@ -145,10 +145,10 @@ export function setupAuth(app: Express) {
                 // not re-derived here from an email allowlist: this strategy runs on
                 // the public /api/login endpoint, so any promotion logic placed here
                 // would be reachable by anyone who can authenticate.
-                console.log(`[DEBUG-AUTH] Connexion réussie pour: ${user.username}`);
+                dbg(`[AUTH] Login succeeded for: ${user.username}`);
                 return done(null, user);
             } catch (err) {
-                console.error(`[DEBUG-AUTH] Erreur fatale dans LocalStrategy:`, err);
+                console.error("[AUTH] LocalStrategy error:", err);
                 return done(err);
             }
         }),
@@ -213,16 +213,16 @@ export function setupAuth(app: Express) {
     });
 
     app.post("/api/login", (req, res, next) => {
-        console.log(`[DEBUG-AUTH] Requête POST /api/login reçue pour: ${req.body.username}`);
+        dbg(`[AUTH] POST /api/login for: ${req.body.username}`);
         passport.authenticate("local", (err: any, user: SelectUser | false) => {
             if (err) {
-                console.error(`[DEBUG-AUTH] Erreur Passport sur /api/login:`, err);
+                console.error("[AUTH] Passport error on /api/login:", err);
                 return res.status(401).send("Invalid username or password");
             }
             if (!user) return res.status(401).send("Invalid username or password");
             req.login(user, (err) => {
                 if (err) {
-                    console.error(`[DEBUG-AUTH] Erreur req.login sur /api/login:`, err);
+                    console.error("[AUTH] req.login error on /api/login:", err);
                     return res.status(500).send("Unable to create session");
                 }
                 storage.createUserActivity(user.id, "login", "Connexion au compte").catch(console.error);

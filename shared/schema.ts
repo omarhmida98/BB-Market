@@ -98,9 +98,207 @@ export const productQuerySchema = z.object({
   stock: z.enum(PRODUCT_STOCK_FILTERS).catch("all").default("all"),
   promo: z.enum(PRODUCT_PROMO_FILTERS).catch("all").default("all"),
   sort: z.enum(PRODUCT_SORTS).catch("newest").default("newest"),
+  /**
+   * Upper price bound, used by the "price under X" homepage shelf.
+   *
+   * Preprocessed rather than `z.coerce.number()` because an absent query
+   * parameter arrives as `undefined`, and coercing that gives NaN instead of
+   * "no bound" - which would then poison the SQL comparison. Empty string is
+   * treated the same way, since that is what an unset admin input posts.
+   *
+   * Left `.optional()` and deliberately not given a `.default(undefined)`: Zod
+   * narrows a defaulted optional to a *required* `number` in the output type,
+   * which would force every existing caller of `productQuerySchema` to pass one.
+   */
+  maxPrice: z.preprocess(
+    (value) => (value === "" || value === null || value === undefined ? undefined : Number(value)),
+    z.number().min(0).max(1_000_000).optional(),
+  ),
 });
 
 export type ProductQuery = z.infer<typeof productQuerySchema>;
+
+/**
+ * The homepage is a list of shelves, and each shelf is a named slice of the
+ * catalogue the admin configures without touching code.
+ *
+ * `newest`, `low_stock` and `promotions` are deliberately the same three buckets
+ * the catalogue already exposes (`sort=newest`, `stock=low`, `promo=active`), so
+ * a shelf never needs its own idea of what "on offer" or "running out" means.
+ * `best_sellers` is the only type with no catalogue counterpart, because it is
+ * derived from order history rather than from the product table.
+ *
+ * `price_under` carries its own ceiling and `category` names a category; the two
+ * are only meaningful for their own type, which is why `homepageSectionInputSchema`
+ * enforces that pairing instead of trusting the form to send the right fields.
+ */
+export const HOMEPAGE_SECTION_TYPES = [
+  "newest",
+  "best_sellers",
+  "low_stock",
+  "promotions",
+  "category",
+  "price_under",
+] as const;
+
+export type HomepageSectionType = (typeof HOMEPAGE_SECTION_TYPES)[number];
+
+/**
+ * The languages a shelf's authored text can carry.
+ *
+ * The array order is the fallback order as well as the admin tab order: French
+ * is the authoring default and the only required language, so it sits first and
+ * every other language falls back to it (see `shared/homepage.ts`).
+ */
+export const HOMEPAGE_LOCALES = ["fr", "en", "ar"] as const;
+export type HomepageLocale = (typeof HOMEPAGE_LOCALES)[number];
+
+/**
+ * Bounds on how many products one shelf may request.
+ *
+ * The ceiling is the point: a homepage shelf is a preview, and a preview that
+ * downloads the whole catalogue defeats the paginated catalogue endpoint that
+ * `queryProducts` exists to provide. The floor keeps a shelf from rendering as a
+ * single lonely card on a wide desktop row.
+ */
+export const HOMEPAGE_SECTION_MIN_PRODUCTS = 4;
+export const HOMEPAGE_SECTION_MAX_PRODUCTS = 12;
+export const HOMEPAGE_SECTION_DEFAULT_PRODUCTS = 10;
+
+/**
+ * Every piece of customer-visible text is stored once per language.
+ *
+ * The columns are split (`title_fr`, `title_en`, `title_ar`) rather than kept in
+ * a single JSON blob because the database remains queryable and the schema keeps
+ * the "French is required, the rest are optional" rule visible. `titleFr` is the
+ * only NOT NULL field: it is both the authoring default and the guaranteed
+ * fallback base, so a shelf always has something to render. The removed
+ * single-language `title`/`tileTitle`/... columns are renamed to their `_fr`
+ * twins in migration 0007, which is what moves the existing content into French
+ * without a copy-and-drop window.
+ */
+export type HomepageSection = {
+  id: number;
+  titleFr: string;
+  titleEn: string | null;
+  titleAr: string | null;
+  type: HomepageSectionType;
+  /** Only read when `type` is `category`. */
+  category: string | null;
+  /** Only read when `type` is `price_under`. */
+  maxPrice: number | null;
+  maxProducts: number;
+  displayOrder: number;
+  enabled: boolean;
+  /**
+   * Optional tall promo tile shown at the head of the shelf. Every field is
+   * nullable on purpose: a half-configured tile (image but no CTA) should still
+   * render, and an admin who sets no image at all gets a plain gradient tile
+   * rather than a broken image. The image URL and link are language-independent;
+   * only the text is translated.
+   */
+  tileImageUrl: string | null;
+  tileTitleFr: string | null;
+  tileTitleEn: string | null;
+  tileTitleAr: string | null;
+  tileSubtitleFr: string | null;
+  tileSubtitleEn: string | null;
+  tileSubtitleAr: string | null;
+  tileCtaLabelFr: string | null;
+  tileCtaLabelEn: string | null;
+  tileCtaLabelAr: string | null;
+  tileHref: string | null;
+  createdAt: Date | string | null;
+  updatedAt: Date | string | null;
+};
+
+/**
+ * Validation messages are i18n keys, not sentences.
+ *
+ * The server cannot know the reader's language - the same error can reach a
+ * French, English or Arabic admin - so it returns a key and the client resolves
+ * it through `t()`. Messages that are not keys (a raw driver error) are passed
+ * through untouched by `sectionErrorMessage`.
+ */
+const homepageSectionBase = z.object({
+  titleFr: z.string().trim().min(1, "admin.homepage_error_title_required").max(120),
+  titleEn: z.string().trim().max(120).optional().nullable(),
+  titleAr: z.string().trim().max(120).optional().nullable(),
+  type: z.enum(HOMEPAGE_SECTION_TYPES),
+  category: z.string().trim().max(120).optional().nullable(),
+  maxPrice: z.coerce.number().min(0).max(1_000_000).optional().nullable(),
+  maxProducts: z.coerce
+    .number()
+    .int()
+    .min(HOMEPAGE_SECTION_MIN_PRODUCTS)
+    .max(HOMEPAGE_SECTION_MAX_PRODUCTS)
+    .default(HOMEPAGE_SECTION_DEFAULT_PRODUCTS),
+  displayOrder: z.coerce.number().int().min(0).max(10_000).default(0),
+  enabled: z.boolean().optional().default(true),
+  tileImageUrl: z.string().trim().max(2048).optional().nullable(),
+  tileTitleFr: z.string().trim().max(120).optional().nullable(),
+  tileTitleEn: z.string().trim().max(120).optional().nullable(),
+  tileTitleAr: z.string().trim().max(120).optional().nullable(),
+  tileSubtitleFr: z.string().trim().max(240).optional().nullable(),
+  tileSubtitleEn: z.string().trim().max(240).optional().nullable(),
+  tileSubtitleAr: z.string().trim().max(240).optional().nullable(),
+  tileCtaLabelFr: z.string().trim().max(80).optional().nullable(),
+  tileCtaLabelEn: z.string().trim().max(80).optional().nullable(),
+  tileCtaLabelAr: z.string().trim().max(80).optional().nullable(),
+  tileHref: z
+    .string()
+    .trim()
+    .max(2048)
+    .optional()
+    .nullable()
+    .refine((value) => !value || value.startsWith("/") || /^https?:\/\//i.test(value), {
+      message: "admin.homepage_error_href_invalid",
+    }),
+});
+
+/**
+ * A shelf whose type cannot be satisfied renders nothing, which would look like a
+ * bug rather than a misconfiguration. Rejecting the pair here means the admin gets
+ * an error naming the field to fix instead of a silently missing shelf.
+ */
+function validateHomepageSectionShape(
+  value: { type: HomepageSectionType; category?: string | null; maxPrice?: number | null },
+  ctx: z.RefinementCtx,
+) {
+  if (value.type === "category" && !value.category?.trim()) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["category"], message: "admin.homepage_error_category_required" });
+  }
+  if (value.type === "price_under" && !(Number(value.maxPrice) > 0)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["maxPrice"], message: "admin.homepage_error_price_required" });
+  }
+}
+
+export const homepageSectionInputSchema = homepageSectionBase.superRefine(validateHomepageSectionShape);
+export type HomepageSectionInput = z.infer<typeof homepageSectionInputSchema>;
+
+/**
+ * Patch form: every field optional, because an edit sends only what changed.
+ *
+ * Deliberately NOT the full schema with `.partial()`: the refine above only knows
+ * how to judge a complete section. The PATCH route instead merges the patch over
+ * the stored row and validates the *result*, so flipping a shelf from `category`
+ * to `newest` while leaving `category` populated still passes, and flipping it
+ * *to* `category` without naming one still fails.
+ */
+export const homepageSectionPatchSchema = homepageSectionBase.partial();
+export type HomepageSectionPatch = z.infer<typeof homepageSectionPatchSchema>;
+
+/**
+ * A section plus the products resolved for it, which is what the homepage renders.
+ *
+ * One payload for the whole page rather than one request per shelf. The
+ * alternative - a request per shelf, each excluding what the previous one showed -
+ * makes every shelf refetch as soon as the shelf before it resolves, so the page
+ * costs roughly twice the requests it has shelves and still arrives in pieces.
+ * Resolving them together is one round trip and de-duplication is exact, because
+ * the same pass decides what each shelf gets.
+ */
+export type HomepageShelf = HomepageSection & { products: Product[] };
 
 export type Message = {
   id: number;
@@ -493,5 +691,6 @@ export type InsertSettings = z.infer<typeof insertSettingsSchema>;
 export type InsertStickerCatalog = z.infer<typeof insertStickerCatalogSchema>;
 export type InsertCategory = z.infer<typeof insertCategorySchema>;
 export type InsertOrder = z.infer<typeof insertOrderSchema>;
+export type InsertHomepageSection = z.infer<typeof homepageSectionInputSchema>;
 export type UpsertSocialMediaEmbed = z.infer<typeof upsertSocialMediaEmbedSchema>;
 export type LoginCredentials = z.infer<typeof loginSchema>;

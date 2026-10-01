@@ -7,6 +7,7 @@ import {
 import { User, InsertUser, LoginCredentials } from "@shared/schema";
 import { apiRequest, queryClient } from "../lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import i18n from "@/lib/i18n";
 
 type AuthContextType = {
     user: User | null;
@@ -49,7 +50,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         },
         onError: (error: Error) => {
             toast({
-                title: "Login failed",
+                title: i18n.t("auth.login_failed", "Échec de la connexion"),
                 description: error.message,
                 variant: "destructive",
             });
@@ -66,7 +67,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         },
         onError: (error: Error) => {
             toast({
-                title: "Registration failed",
+                title: i18n.t("auth.registration_failed", "Échec de l'inscription"),
                 description: error.message,
                 variant: "destructive",
             });
@@ -82,7 +83,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         },
         onError: (error: Error) => {
             toast({
-                title: "Logout failed",
+                title: i18n.t("auth.logout_failed", "Échec de la déconnexion"),
                 description: error.message,
                 variant: "destructive",
             });

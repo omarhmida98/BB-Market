@@ -1,13 +1,32 @@
-import type { Product, InsertProduct, InsertMessage, Message, Promo, InsertPromo, User, InsertUser, Settings, InsertSettings, StickerCatalog, InsertStickerCatalog, UserActivity, Category, InsertCategory, Order, InsertOrder, SocialMediaEmbed, SocialPlatform, DeliverySettings, ProductQuery, ProductListResponse } from "shared/schema.js";
-import { PRODUCT_LOW_STOCK_THRESHOLD } from "shared/schema.js";
-import { db, products, messages, promos, users, settings, stickerCatalogs, userActivities, categories, orders, socialMediaEmbeds, wishlist } from "./db.js";
+import type { Product, InsertProduct, InsertMessage, Message, Promo, InsertPromo, User, InsertUser, Settings, InsertSettings, StickerCatalog, InsertStickerCatalog, UserActivity, Category, InsertCategory, Order, InsertOrder, SocialMediaEmbed, SocialPlatform, DeliverySettings, ProductQuery, ProductListResponse, HomepageSection, HomepageSectionInput, HomepageSectionPatch, HomepageSectionType, HomepageShelf } from "shared/schema.js";
+import { PRODUCT_LOW_STOCK_THRESHOLD, HOMEPAGE_SECTION_DEFAULT_PRODUCTS, HOMEPAGE_SECTION_MAX_PRODUCTS, HOMEPAGE_SECTION_MIN_PRODUCTS, productQuerySchema } from "shared/schema.js";
+import { db, products, messages, promos, users, settings, stickerCatalogs, userActivities, categories, orders, socialMediaEmbeds, wishlist, homepageSections } from "./db.js";
 import { toWishlistItem, type WishlistItem, type WishlistListResponse } from "shared/wishlist.js";
 import { normaliseStoredRole } from "./roles.js";
-import { eq, desc, asc, and, sql, count, type SQL } from "drizzle-orm";
+import { eq, desc, asc, and, sql, count, inArray, notInArray, type SQL } from "drizzle-orm";
 import { resolveDbTarget } from "./db-target.js";
+import { getBestSellingProductIds } from "./analytics.js";
+import { dbg } from "./debug.js";
 
 export interface IStorage {
   queryProducts(query: ProductQuery): Promise<ProductListResponse>;
+  /**
+   * Products for one homepage shelf, resolved from that shelf's stored
+   * configuration and capped at `section.maxProducts`.
+   *
+   * `excludeIds` is how cross-shelf de-duplication works: products already placed
+   * on an earlier shelf are passed in so the same item is not offered three times
+   * on one page. Excluding in SQL rather than filtering in the browser is what
+   * keeps the result honest - a shelf that filtered after a LIMIT would show four
+   * products when ten were asked for.
+   */
+  queryHomepageSectionProducts(section: HomepageSection, excludeIds?: number[]): Promise<Product[]>;
+  /**
+   * Every enabled shelf with its products, in display order, empty shelves dropped.
+   *
+   * This is the single read the homepage makes.
+   */
+  queryHomepageShelves(): Promise<HomepageShelf[]>;
   getProduct(id: number): Promise<Product | undefined>;
   createMessage(message: InsertMessage): Promise<Message>;
   getMessages(): Promise<Message[]>;
@@ -83,6 +102,14 @@ export interface IStorage {
   getSocialMediaEmbeds(): Promise<SocialMediaEmbed[]>;
   upsertSocialMediaEmbed(platform: SocialPlatform, url: string | null): Promise<SocialMediaEmbed>;
   deleteSocialMediaEmbed(platform: SocialPlatform): Promise<boolean>;
+  // Homepage Sections
+  getHomepageSections(includeDisabled?: boolean): Promise<HomepageSection[]>;
+  getHomepageSection(id: number): Promise<HomepageSection | undefined>;
+  createHomepageSection(section: HomepageSectionInput): Promise<HomepageSection>;
+  updateHomepageSection(id: number, patch: HomepageSectionPatch): Promise<HomepageSection | undefined>;
+  deleteHomepageSection(id: number): Promise<boolean>;
+  /** Apply an explicit display order to the listed ids, in the order given. */
+  reorderHomepageSections(orderedIds: number[]): Promise<HomepageSection[]>;
 
 }
 
@@ -140,11 +167,21 @@ function toNullableDate(value: unknown): Date | null {
 /**
  * Build the WHERE clause for a catalogue query.
  *
+ * `excludeIds` is not part of the public `ProductQuery`: it exists so a homepage
+ * shelf can skip products an earlier shelf already showed. It is applied here
+ * rather than in the component because it has to be applied *before* the LIMIT -
+ * filtering a returned page afterwards would leave the shelf short.
+ *
  * Exported so the load test can assert the plan uses the indexes without
  * having to go through HTTP.
  */
-export function buildProductFilters(query: ProductQuery): SQL[] | undefined {
+export function buildProductFilters(query: ProductQuery, excludeIds: number[] = []): SQL[] | undefined {
   const filters: SQL[] = [];
+
+  const skip = excludeIds.filter((id) => Number.isInteger(id) && id > 0);
+  if (skip.length > 0) {
+    filters.push(notInArray(products.id, skip));
+  }
 
   if (query.search) {
     // Case-insensitive substring on the name. `lower()` keeps this identical on
@@ -176,6 +213,13 @@ export function buildProductFilters(query: ProductQuery): SQL[] | undefined {
     // Still sellable, but barely. `> 0` keeps `low` disjoint from `out`, so a
     // product can never be counted in both buckets.
     filters.push(sql`${products.quantity} > 0 AND ${products.quantity} <= ${PRODUCT_LOW_STOCK_THRESHOLD}`);
+  }
+
+  if (query.maxPrice !== undefined) {
+    // `price` has been a numeric column since migration 0002 (double precision on
+    // PostgreSQL, real on SQLite), so this is a numeric comparison and needs no
+    // cast - and no dialect branch, unlike the money columns on `orders`.
+    filters.push(sql`${products.price} <= ${query.maxPrice}`);
   }
 
   if (query.promo === "active") {
@@ -257,7 +301,18 @@ export class DatabaseStorage implements IStorage {
    * compiler catches any caller left behind.
    */
   async queryProducts(query: ProductQuery): Promise<ProductListResponse> {
-    const filters = buildProductFilters(query);
+    return this.runProductQuery(query, []);
+  }
+
+  /**
+   * The shared body of every product read: filters, sort, total and page window.
+   *
+   * Split out so `queryHomepageSectionProducts` cannot grow its own subtly
+   * different filtering path - the whole point of the shelf work is that a
+   * homepage shelf is the same query as a catalogue page with a different limit.
+   */
+  private async runProductQuery(query: ProductQuery, excludeIds: number[]): Promise<ProductListResponse> {
+    const filters = buildProductFilters(query, excludeIds);
     const where = filters ? and(...filters) : undefined;
     const offset = (query.page - 1) * query.limit;
 
@@ -426,13 +481,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateUserPassword(id: number, password: string): Promise<void> {
-    console.log(`[DEBUG-DB] Mise à jour du mot de passe pour l'utilisateur ID: ${id}`);
+    dbg(`[DB] Updating password for user #${id}`);
     const result = await db.update(users).set({ password }).where(eq(users.id, id)).returning();
     if (result.length === 0) {
-      console.error(`[DEBUG-DB] ÉCHEC : Utilisateur ID ${id} non trouvé`);
+      console.error(`[DB] Password update failed: user #${id} not found`);
       throw new Error(`User with ID ${id} not found for password update`);
     }
-    console.log(`[DEBUG-DB] Mot de passe mis à jour avec succès pour ID: ${id}`);
   }
 
   async setResetToken(id: number, token: string | null, expires: Date | null): Promise<void> {
@@ -499,7 +553,7 @@ async updateUserRole(id: number, role: string): Promise<void> {
   }
 
   async updateUserGoogleId(id: number, googleId: string): Promise<void> {
-    console.log(`[DEBUG-DB] Mise à jour du googleId pour l'utilisateur ID: ${id}`);
+    dbg(`[DB] Linking Google account for user #${id}`);
     await db.update(users).set({ googleId }).where(eq(users.id, id)).returning();
   }
 
@@ -670,6 +724,222 @@ async updateUserRole(id: number, role: string): Promise<void> {
       .where(eq(socialMediaEmbeds.platform, platform))
       .returning();
     return result.length > 0;
+  }
+
+  /**
+   * Clamp a shelf's product count into the range the homepage is designed for.
+   *
+   * The route already validates with Zod, but the column is a plain integer: a
+   * value written by hand, by an older build, or by a direct SQL edit must not be
+   * able to turn one shelf into a full-catalogue download.
+   */
+  private clampSectionLimit(value: unknown): number {
+    const n = typeof value === "number" ? value : parseInt(String(value ?? ""), 10);
+    if (!Number.isFinite(n)) return HOMEPAGE_SECTION_DEFAULT_PRODUCTS;
+    return Math.min(HOMEPAGE_SECTION_MAX_PRODUCTS, Math.max(HOMEPAGE_SECTION_MIN_PRODUCTS, Math.floor(n)));
+  }
+
+  /**
+   * Turn a stored shelf into the catalogue query it stands for.
+   *
+   * This is the whole contract between the admin's "type" dropdown and what the
+   * homepage renders, so it lives in one function rather than in a switch inside
+   * the route: a new shelf type cannot be added to the admin UI without the
+   * server knowing how to serve it.
+   *
+   * `best_sellers` is handled by the caller instead, because it is the one type
+   * that cannot be expressed as a filtered catalogue query - it is a ranking
+   * derived from order history, not a property of a product row.
+   */
+  private sectionQuery(section: HomepageSection): ProductQuery {
+    const limit = this.clampSectionLimit(section.maxProducts);
+    switch (section.type) {
+      case "promotions":
+        return productQuerySchema.parse({ limit, promo: "active", sort: "newest" });
+      case "low_stock":
+        // Ascending stock, so the products closest to running out lead the shelf.
+        return productQuerySchema.parse({ limit, stock: "low", sort: "stock_asc" });
+      case "category":
+        return productQuerySchema.parse({ limit, category: section.category ?? "", sort: "newest" });
+      case "price_under":
+        return productQuerySchema.parse({ limit, maxPrice: Number(section.maxPrice) || undefined, sort: "price_asc" });
+      case "newest":
+      case "best_sellers":
+      default:
+        return productQuerySchema.parse({ limit, sort: "newest" });
+    }
+  }
+
+  async queryHomepageSectionProducts(section: HomepageSection, excludeIds: number[] = []): Promise<Product[]> {
+    const limit = this.clampSectionLimit(section.maxProducts);
+
+    if (section.type === "best_sellers") {
+      const ids = await getBestSellingProductIds(limit, excludeIds);
+      if (ids.length === 0) return [];
+      const rows = await db
+        .select()
+        .from(products)
+        .where(inArray(products.id, ids));
+      // An `IN (...)` query returns rows in whatever order the planner finds
+      // cheapest, which is rarely the sales ranking this shelf exists to show, so
+      // the id order is re-applied here. Rows missing from the map are products
+      // deleted since they were sold: they drop out rather than rendering as an
+      // empty card.
+      const byId = new Map<number, unknown>(rows.map((row: any) => [Number(row.id), row]));
+      return ids
+        .map((id) => byId.get(id))
+        .filter((row): row is unknown => row !== undefined) as unknown as Product[];
+    }
+
+    const response = await this.runProductQuery(this.sectionQuery(section), excludeIds);
+    return response.items;
+  }
+
+  /**
+   * Resolve every enabled shelf in one pass.
+   *
+   * Two properties this buys over resolving shelves independently:
+   *
+   * DE-DUPLICATION IS EXACT. Each shelf receives the ids already shown above it,
+   * so a product appears once on the page even when two shelves would otherwise
+   * both select it. Because the exclusion is applied before the LIMIT, a shelf
+   * that loses candidates still fills its row from further down the list instead
+   * of coming up short.
+   *
+   * ONE ROUND TRIP FOR THE HOMEPAGE. A per-shelf endpoint would make each shelf
+   * refetch as soon as the shelf above it resolves, because the ids it must skip
+   * are only known then.
+   *
+   * A shelf with no products is dropped entirely - a heading with nothing under it
+   * reads as a broken page, and "low stock" or "price under X" legitimately
+   * matches nothing once the shop runs out.
+   */
+  async queryHomepageShelves(): Promise<HomepageShelf[]> {
+    const sections = await this.getHomepageSections(false);
+    const shelves: HomepageShelf[] = [];
+    const shown: number[] = [];
+
+    for (const section of sections) {
+      const products = await this.queryHomepageSectionProducts(section, shown);
+      if (products.length === 0) continue;
+      shown.push(...products.map((product) => Number(product.id)));
+      shelves.push({ ...section, products });
+    }
+
+    return shelves;
+  }
+
+  private toHomepageSection(row: any): HomepageSection {
+    return {
+      ...row,
+      type: row.type as HomepageSectionType,
+      maxPrice: row.maxPrice === null || row.maxPrice === undefined ? null : Number(row.maxPrice),
+      maxProducts: this.clampSectionLimit(row.maxProducts),
+      displayOrder: Number(row.displayOrder ?? 0),
+      enabled: row.enabled === true || row.enabled === 1,
+    };
+  }
+
+  /**
+   * Normalise a write the same way every other table in this file is normalised.
+   *
+   * The admin form sends "" for a cleared text input and "" for an emptied
+   * number input. Left alone those become empty strings in the database, and
+   * `section.category ?? ""` would then look like a configured category named ""
+   * instead of "no category" - which fails the route's own validation on the next
+   * edit. Coercing at this choke point means no caller can store one.
+   */
+  private normaliseHomepageSection<T extends Record<string, any>>(data: T): T {
+    const next: Record<string, any> = { ...data };
+    // Every nullable localized text column, plus the language-independent ones.
+    // `titleFr` is deliberately absent: it is NOT NULL and Zod already rejects an
+    // empty value, so coercing "" here would only turn a rejected write into a
+    // database constraint error.
+    const textKeys = [
+      "category",
+      "titleEn",
+      "titleAr",
+      "tileImageUrl",
+      "tileTitleFr",
+      "tileTitleEn",
+      "tileTitleAr",
+      "tileSubtitleFr",
+      "tileSubtitleEn",
+      "tileSubtitleAr",
+      "tileCtaLabelFr",
+      "tileCtaLabelEn",
+      "tileCtaLabelAr",
+      "tileHref",
+    ] as const;
+    for (const key of textKeys) {
+      if (key in next) {
+        const value = next[key];
+        next[key] = typeof value === "string" && value.trim() === "" ? null : value ?? null;
+      }
+    }
+    if ("maxPrice" in next) {
+      const value = next.maxPrice;
+      next.maxPrice = value === null || value === undefined || value === "" ? null : toPrice(value);
+    }
+    if ("maxProducts" in next && next.maxProducts !== undefined && next.maxProducts !== null) {
+      next.maxProducts = this.clampSectionLimit(next.maxProducts);
+    }
+    return next as T;
+  }
+
+  async getHomepageSections(includeDisabled = false): Promise<HomepageSection[]> {
+    const rows = await db
+      .select()
+      .from(homepageSections)
+      .where(includeDisabled ? undefined : eq(homepageSections.enabled, true))
+      .orderBy(asc(homepageSections.displayOrder), asc(homepageSections.id));
+    return rows.map((row: any) => this.toHomepageSection(row));
+  }
+
+  async getHomepageSection(id: number): Promise<HomepageSection | undefined> {
+    const [row] = await db.select().from(homepageSections).where(eq(homepageSections.id, id));
+    return row ? this.toHomepageSection(row) : undefined;
+  }
+
+  async createHomepageSection(section: HomepageSectionInput): Promise<HomepageSection> {
+    const [created] = await db
+      .insert(homepageSections)
+      .values(this.normaliseHomepageSection(section as Record<string, any>))
+      .returning();
+    return this.toHomepageSection(created);
+  }
+
+  async updateHomepageSection(id: number, patch: HomepageSectionPatch): Promise<HomepageSection | undefined> {
+    const [updated] = await db
+      .update(homepageSections)
+      .set({ ...this.normaliseHomepageSection(patch as Record<string, any>), updatedAt: new Date() })
+      .where(eq(homepageSections.id, id))
+      .returning();
+    return updated ? this.toHomepageSection(updated) : undefined;
+  }
+
+  async deleteHomepageSection(id: number): Promise<boolean> {
+    const result = await db.delete(homepageSections).where(eq(homepageSections.id, id)).returning();
+    return result.length > 0;
+  }
+
+  /**
+   * Persist a new display order from an ordered list of ids.
+   *
+   * Positions are written as multiples of 10 rather than 0..n-1 so that inserting
+   * a single shelf later only needs one row changed instead of renumbering every
+   * row below it. Ids the caller did not mention keep their position, and unknown
+   * ids are ignored rather than creating rows.
+   */
+  async reorderHomepageSections(orderedIds: number[]): Promise<HomepageSection[]> {
+    const unique = orderedIds.filter((id) => Number.isInteger(id) && id > 0);
+    for (let index = 0; index < unique.length; index += 1) {
+      await db
+        .update(homepageSections)
+        .set({ displayOrder: (index + 1) * 10, updatedAt: new Date() })
+        .where(eq(homepageSections.id, unique[index]));
+    }
+    return this.getHomepageSections(true);
   }
 
   /**

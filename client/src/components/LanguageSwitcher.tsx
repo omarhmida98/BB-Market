@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 export function LanguageSwitcher() {
-    const { i18n } = useTranslation();
+    const { i18n, t } = useTranslation();
 
     const languages = [
         { code: "fr", name: "Français", flag: "/flags/france.jpg" },
@@ -34,7 +34,7 @@ export function LanguageSwitcher() {
                             />
                         );
                     })()}
-                    <span className="sr-only">Toggle language</span>
+                    <span className="sr-only">{t("nav.toggle_language", "Changer de langue")}</span>
                 </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="rounded-xl p-1 min-w-[180px] max-h-[250px] overflow-y-auto animate-in fade-in zoom-in duration-200 shadow-lg border border-slate-200 bg-white dark:bg-gray-800">

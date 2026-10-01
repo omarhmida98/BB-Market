@@ -1,16 +1,22 @@
 import "./env.js";
 import Database from "better-sqlite3";
-import path from "path";
+import { resolveDbTarget } from "./db-target.js";
+import { DEBUG_DB } from "./debug.js";
 
-console.log("CWD:", process.cwd());
-console.log("DATABASE_URL:", process.env.DATABASE_URL);
+if (!DEBUG_DB) {
+  console.log("[test] DEBUG_DB is off. Set DEBUG_DB=true to print database diagnostics.");
+  process.exit(0);
+}
 
-const dbUrl = process.env.DATABASE_URL || "file:./sred_showcase.db";
-const dbPath = dbUrl.startsWith("file:") ? dbUrl.slice(5) : dbUrl;
+const target = resolveDbTarget();
+console.log("[test] dialect:", target.dialect);
 
-console.log("dbPath resolved to:", dbPath);
-console.log("Absolute dbPath:", path.resolve(process.cwd(), dbPath));
+if (target.dialect !== "sqlite" || !target.sqlitePath) {
+  console.log("[test] Not a local SQLite database; nothing to inspect.");
+  process.exit(0);
+}
 
-const sqlite = new Database(dbPath);
+const sqlite = new Database(target.sqlitePath, { readonly: true });
 const tables = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
-console.log("Tables in database:", tables);
+console.log("[test] Tables:", tables);
+sqlite.close();

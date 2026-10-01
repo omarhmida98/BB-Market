@@ -4,18 +4,54 @@ import { ArrowRight, ShoppingBag, Truck, ShieldCheck, Headphones, Instagram, Map
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { ProductCard } from "@/components/ProductCard";
+import { ProductShelf } from "@/components/ProductShelf";
+import { FlashSaleBanner } from "@/components/FlashSaleBanner";
 import { SocialMediaSection } from "@/components/SocialMediaSection";
 import { useFeaturedProducts, usePromotedProducts } from "@/hooks/use-products";
+import { useHomepageShelves } from "@/hooks/use-homepage-sections";
 import { SiteBackground } from "@/components/SiteBackground";
 import { useTranslation } from "react-i18next";
+import type { MouseEvent as ReactMouseEvent } from "react";
+import { scrollToAnchor, SOCIAL_MEDIA_ANCHOR_ID } from "@/lib/anchorScroll";
 import { Flame } from "lucide-react";
 
 export default function Home() {
   const { t } = useTranslation();
-  // Six rows from the database, not the first six of the whole catalogue. The
-  // old version downloaded every product to render this strip.
-  const { data } = useFeaturedProducts(6);
-  const featured = data?.items ?? [];
+
+  /**
+   * Jumps to the social section. Kept as a plain <a href="#social-media"> rather
+   * than wouter's <Link>: Link preventDefaults the click and calls pushState,
+   * which never scrolls, so the URL would change while the page stayed still.
+   */
+  const handleSocialAnchorClick = (event: ReactMouseEvent<HTMLAnchorElement>) => {
+    // Leave modified / non-primary clicks alone so "open in new tab" and
+    // "copy link address" keep working on a real href.
+    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.button !== 0) {
+      return;
+    }
+    // If the section is somehow absent, fall back to native fragment handling.
+    if (!scrollToAnchor(SOCIAL_MEDIA_ANCHOR_ID)) return;
+
+    event.preventDefault();
+    // Keep the anchor in the URL for sharing/bookmarking. replaceState rather
+    // than pushState so Back is not filled with a no-op entry.
+    window.history.replaceState(null, "", `#${SOCIAL_MEDIA_ANCHOR_ID}`);
+  };
+  // Admin-configured shelves, resolved server-side: the database does the
+  // filtering, the capping, the ordering and the de-duplication across shelves,
+  // and returns one payload for the whole page. An empty result is a legitimate
+  // state (every shelf disabled, or none matching), not an error.
+  const { data: shelvesData, isPending: shelvesPending } = useHomepageShelves();
+  const shelves = shelvesData ?? [];
+
+  // Safety net for a shop with no shelves configured at all. The request is
+  // disabled until the shelves have resolved and come back empty, so the normal
+  // path costs nothing - a homepage that lost its products entirely because an
+  // admin deleted a row would be a far worse outcome than one redundant grid.
+  const { data: featuredData } = useFeaturedProducts(6, {
+    enabled: !shelvesPending && shelves.length === 0,
+  });
+  const featured = shelves.length === 0 ? featuredData?.items ?? [] : [];
 
   // Live promotions, filtered and capped in SQL (limit 8). The section hides
   // itself entirely when nothing is on offer, rather than leaving an empty
@@ -64,6 +100,11 @@ export default function Home() {
           </div>
         </section>
 
+        {/* First promotional block on the page. Renders nothing at all when no
+            promotion is live, so the homepage falls back to its previous layout
+            rather than showing an empty banner. */}
+        <FlashSaleBanner />
+
         <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-10">
           <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {[
@@ -80,23 +121,38 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="py-20">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-10">
-              <div>
-                <p className="text-[#ff6200] font-black uppercase tracking-[.22em] text-xs mb-2">B&B MARKET</p>
-                <h2 className="text-3xl sm:text-4xl font-display font-black text-foreground">{t("featured.title", "Nos produits")}</h2>
-                <p className="text-muted-foreground mt-2">{t("featured.subtitle", "Découvrez une sélection de nos articles.")}</p>
+{/* Admin-configured shelves. Each one renders nothing of its own when it
+            has no products, and the server already drops empty shelves, so the
+            page never shows a heading with nothing under it. */}
+        {shelves.map((shelf) => (
+          <ProductShelf key={shelf.id} shelf={shelf} />
+        ))}
+
+        {/* Fallback grid, shown only when no shelf produced any products. */}
+        {shelves.length === 0 && (
+          <section className="py-20">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+              <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-10">
+                <div>
+                  <p className="text-[#ff6200] font-black uppercase tracking-[.22em] text-xs mb-2">B&B MARKET</p>
+                  <h2 className="text-3xl sm:text-4xl font-display font-black text-foreground">{t("featured.title", "Nos produits")}</h2>
+                  <p className="text-muted-foreground mt-2">{t("featured.subtitle", "Découvrez une sélection de nos articles.")}</p>
+                </div>
+                <Link href="/products" className="text-primary font-bold inline-flex items-center gap-2">{t("featured.view_all", "Tout voir")} <ArrowRight className="w-4 h-4" /></Link>
               </div>
-              <Link href="/products" className="text-primary font-bold inline-flex items-center gap-2">{t("featured.view_all", "Tout voir")} <ArrowRight className="w-4 h-4" /></Link>
+              {featured.length ? (
+                <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">{featured.map(p => <ProductCard key={p.id} product={p} />)}</div>
+              ) : (
+                // Only once both the shelves and the fallback have resolved. During
+                // that window this would flash "no products" at a shop that has
+                // plenty.
+                !shelvesPending && (
+                  <div className="rounded-3xl border border-dashed border-border bg-card/60 py-16 text-center text-muted-foreground">{t("home.empty", "Les produits ajoutés depuis l'administration apparaîtront ici.")}</div>
+                )
+              )}
             </div>
-            {featured.length ? (
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">{featured.map(p => <ProductCard key={p.id} product={p} />)}</div>
-            ) : (
-              <div className="rounded-3xl border border-dashed border-border bg-card/60 py-16 text-center text-muted-foreground">{t("home.empty", "Les produits ajoutés depuis l'administration apparaîtront ici.")}</div>
-            )}
-          </div>
-        </section>
+          </section>
+        )}
 
         {promoted.length > 0 && (
           <section className="pb-20">
@@ -144,7 +200,13 @@ export default function Home() {
               <a href="https://www.bing.com/maps/search?v=2&pc=FACEBK&mid=8100&mkt=fr-FR&FORM=FBKPL1&q=Avenue+Khezama%2C+Sousse%2C+Tunisia%2C+4051&cp=35.849300%7E10.613900&lvl=11&style=r" target="_blank" rel="noreferrer" className="mt-6 inline-flex items-center gap-2 rounded-xl bg-[#ff6200] px-5 py-3 font-bold text-white"><MapPin className="w-5 h-5" /> {t("home.map", "Voir sur la carte")}</a>
             </div>
             <div className="relative md:text-end">
-              <Link href="/#social-media" className="inline-flex items-center gap-2 text-lg font-bold hover:text-[#ffb27e]"><Instagram className="w-6 h-6" /> {t("home.social", "Suivez-nous sur nos réseaux")}</Link>
+              <a
+                href={`#${SOCIAL_MEDIA_ANCHOR_ID}`}
+                onClick={handleSocialAnchorClick}
+                className="inline-flex cursor-pointer items-center gap-2 rounded-lg text-lg font-bold text-white transition-colors -mx-3 -my-2 px-3 py-2 hover:bg-white/10 hover:text-[#ffb27e] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#ff6200] focus-visible:ring-offset-2 focus-visible:ring-offset-[#063f2e]"
+              >
+                <Instagram className="w-6 h-6 shrink-0" /> {t("home.social", "Suivez-nous sur nos réseaux")}
+              </a>
             </div>
           </div>
         </section>

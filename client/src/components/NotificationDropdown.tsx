@@ -1,10 +1,13 @@
 import { useState, useRef, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { Bell, X, Clock, CheckCircle, MessageSquare } from "lucide-react";
 import { useNotifications, type NotificationItem } from "@/hooks/use-notifications";
 import { useAuth } from "@/hooks/use-auth";
 import { useLocation } from "wouter";
+import { formatDate } from "@/lib/format";
 
 export function NotificationDropdown() {
+  const { t, i18n } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const { count, items } = useNotifications();
@@ -89,11 +92,11 @@ export function NotificationDropdown() {
     const diffHours = Math.floor(diffMins / 60);
     const diffDays = Math.floor(diffHours / 24);
 
-    if (diffMins < 1) return "À l'instant";
-    if (diffMins < 60) return `Il y a ${diffMins} min`;
-    if (diffHours < 24) return `Il y a ${diffHours}h`;
-    if (diffDays < 7) return `Il y a ${diffDays}j`;
-    return date.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" });
+    if (diffMins < 1) return t("notifications.time_just_now", "À l'instant");
+    if (diffMins < 60) return t("notifications.time_minutes", "Il y a {{count}} min", { count: diffMins });
+    if (diffHours < 24) return t("notifications.time_hours", "Il y a {{count}}h", { count: diffHours });
+    if (diffDays < 7) return t("notifications.time_days", "Il y a {{count}}j", { count: diffDays });
+    return formatDate(date, i18n.language, { day: "2-digit", month: "short" });
   };
 
   return (
@@ -101,8 +104,8 @@ export function NotificationDropdown() {
       <button
         onClick={() => setIsOpen(!isOpen)}
         className="relative p-2 text-muted-foreground hover:text-primary transition-colors rounded-full hover:bg-primary/5"
-        aria-label="Notifications"
-        title="Notifications"
+        aria-label={t("notifications.aria", "Notifications")}
+        title={t("notifications.aria", "Notifications")}
       >
         <Bell className="w-5 h-5" />
         {count > 0 && (
@@ -117,9 +120,13 @@ export function NotificationDropdown() {
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-gradient-to-r from-primary/5 to-transparent">
             <div>
-              <h3 className="font-bold text-slate-900 text-sm">Notifications</h3>
+              <h3 className="font-bold text-slate-900 text-sm">{t("notifications.title", "Notifications")}</h3>
               <p className="text-[11px] text-slate-500">
-                {count > 0 ? `${count} non ${count > 1 ? "lues" : "lue"}` : ""}
+                {count > 0
+                  ? count > 1
+                    ? t("notifications.unread_plural", "{{count}} non lues", { count })
+                    : t("notifications.unread_singular", "{{count}} non lue", { count })
+                  : ""}
               </p>
             </div>
             <button
@@ -137,8 +144,8 @@ export function NotificationDropdown() {
                 <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center text-slate-300 mb-3">
                   <Bell className="w-6 h-6" />
                 </div>
-                <p className="text-sm font-medium text-slate-500">Aucune notification</p>
-                <p className="text-xs text-slate-400 mt-1">Vous serez notifié en cas de nouvelle activité.</p>
+                <p className="text-sm font-medium text-slate-500">{t("notifications.empty", "Aucune notification")}</p>
+                <p className="text-xs text-slate-400 mt-1">{t("notifications.empty_hint", "Vous serez notifié en cas de nouvelle activité.")}</p>
               </div>
             ) : (
               items.map((item) => (
@@ -187,7 +194,7 @@ export function NotificationDropdown() {
                 onClick={handleViewAll}
                 className="w-full py-2.5 text-center text-sm font-bold text-primary hover:bg-primary/5 rounded-xl transition-colors"
               >
-               Marquer toutes comme lues
+               {t("notifications.mark_all_read", "Marquer toutes comme lues")}
               </button>
             </div>
           )}

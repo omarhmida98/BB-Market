@@ -16,19 +16,18 @@ import {
   type DeliverySettings,
   type FulfillmentMethod,
 } from "@shared/schema";
+import { formatMoney } from "@/lib/format";
 
 const FULFILLMENT_OPTIONS: { value: FulfillmentMethod; icon: typeof Truck }[] = [
   { value: "delivery", icon: Truck },
   { value: "pickup", icon: Store },
 ];
 
-const money = (value: number) => `${Number(value || 0).toFixed(3)} DT`;
-
 export default function Checkout() {
   const { selection, totalItems, clearSelection } = useSelection();
   const { user } = useAuth();
   const { toast } = useToast();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [, setLocation] = useLocation();
   const [submitting, setSubmitting] = useState(false);
   const [orderId, setOrderId] = useState<number | null>(null);
@@ -329,10 +328,10 @@ export default function Checkout() {
                     <div className="min-w-0 flex-1">
                       <div className="font-bold text-sm truncate">{item.name}</div>
                       <div className="text-xs text-slate-500">
-                        {item.quantity} × {money(Number(item.price || 0))}
+                        {item.quantity} × {formatMoney(item.price ?? 0, i18n.language)}
                       </div>
                     </div>
-                    <div className="text-sm font-black">{money(Number(item.price || 0) * item.quantity)}</div>
+                    <div className="text-sm font-black">{formatMoney(Number(item.price || 0) * item.quantity, i18n.language)}</div>
                   </div>
                 ))}
               </div>
@@ -342,13 +341,13 @@ export default function Checkout() {
                   <span className="text-slate-500">
                     {t("checkout.items_count")} ({totalItems})
                   </span>
-                  <span className="font-bold">{money(subtotal)}</span>
+                  <span className="font-bold">{formatMoney(subtotal, i18n.language)}</span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-slate-500">{t("checkout.delivery_fee")}</span>
                   {isDelivery ? (
                     deliveryFee > 0 ? (
-                      <span className="font-bold">{money(deliveryFee)}</span>
+                      <span className="font-bold">{formatMoney(deliveryFee, i18n.language)}</span>
                     ) : (
                       <span className="font-bold text-emerald-600">{t("checkout.free")}</span>
                     )
@@ -358,7 +357,7 @@ export default function Checkout() {
                 </div>
                 {isDelivery && missingForFree > 0 && (
                   <div className="text-xs font-bold text-[#ff6200]">
-                    {t("checkout.free_hint", { amount: money(missingForFree) })}
+                    {t("checkout.free_hint", { amount: formatMoney(missingForFree, i18n.language) })}
                   </div>
                 )}
                 {isDelivery && threshold > 0 && missingForFree === 0 && (
@@ -366,7 +365,7 @@ export default function Checkout() {
                 )}
                 <div className="flex justify-between text-xl font-black pt-1">
                   <span>{t("checkout.total")}</span>
-                  <span className="text-primary">{money(grandTotal)}</span>
+                  <span className="text-primary">{formatMoney(grandTotal, i18n.language)}</span>
                 </div>
               </div>
 

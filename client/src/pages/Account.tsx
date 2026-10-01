@@ -26,6 +26,7 @@ import {
 import { OrderStatusBadge } from "@/components/OrderStatusTimeline";
 import { WishlistSection } from "@/components/WishlistSection";
 import { Button } from "@/components/ui/button";
+import { formatDate as formatDateUtil, formatMoney as formatMoneyUtil } from "@/lib/format";
 
 /**
  * Customer account: identity summary plus order history.
@@ -40,19 +41,12 @@ export default function Account() {
   const [, setLocation] = useLocation();
   const { data: orders, isLoading: loadingOrders } = useMyOrders();
 
-  const dateLocale =
-    i18n.language.startsWith("ar") ? "ar-TN" : i18n.language.startsWith("en") ? "en-US" : "fr-FR";
-
   const formatDate = (iso: string | null) =>
     iso
-      ? new Date(iso).toLocaleDateString(dateLocale, {
-          day: "2-digit",
-          month: "short",
-          year: "numeric",
-        })
+      ? formatDateUtil(iso, i18n.language, { day: "2-digit", month: "short", year: "numeric" })
       : "—";
 
-  const formatMoney = (value: number) => `${Number(value || 0).toFixed(3)} DT`;
+  const formatMoney = (value: number) => formatMoneyUtil(value, i18n.language);
 
   // Redirect in an effect rather than during render: a navigation is a side
   // effect, and doing it inline re-renders the component before React has
