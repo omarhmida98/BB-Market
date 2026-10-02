@@ -82,7 +82,7 @@ export default function Home() {
                 </p>
                 <div className="mt-8 flex flex-wrap gap-4">
                   <Link href="/products" className="inline-flex items-center gap-2 px-6 py-3.5 rounded-2xl bg-primary text-primary-foreground font-bold shadow-lg shadow-primary/20 hover:-translate-y-0.5 transition-all">
-                    {t("hero.btn_products", "Voir les produits")} <ArrowRight className="w-5 h-5" />
+                    {t("hero.btn_products", "Voir les produits")} <ArrowRight className="w-5 h-5 rtl:rotate-180" />
                   </Link>
                   <Link href="/contact" className="inline-flex items-center gap-2 px-6 py-3.5 rounded-2xl bg-background border border-border font-bold hover:border-[#ff6200]/50 hover:text-[#ff6200] transition-all">
                     {t("hero.btn_contact", "Nous contacter")}
@@ -138,7 +138,7 @@ export default function Home() {
                   <h2 className="text-3xl sm:text-4xl font-display font-black text-foreground">{t("featured.title", "Nos produits")}</h2>
                   <p className="text-muted-foreground mt-2">{t("featured.subtitle", "Découvrez une sélection de nos articles.")}</p>
                 </div>
-                <Link href="/products" className="text-primary font-bold inline-flex items-center gap-2">{t("featured.view_all", "Tout voir")} <ArrowRight className="w-4 h-4" /></Link>
+                <Link href="/products" className="text-primary font-bold inline-flex items-center gap-2">{t("featured.view_all", "Tout voir")} <ArrowRight className="w-4 h-4 rtl:rotate-180" /></Link>
               </div>
               {featured.length ? (
                 <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">{featured.map(p => <ProductCard key={p.id} product={p} />)}</div>
@@ -177,7 +177,7 @@ export default function Home() {
                   href="/products?promo=active"
                   className="text-primary font-bold inline-flex items-center gap-2"
                 >
-                  {t("promotions.view_all", "Toutes les promotions")} <ArrowRight className="w-4 h-4" />
+                  {t("promotions.view_all", "Toutes les promotions")} <ArrowRight className="w-4 h-4 rtl:rotate-180" />
                 </Link>
               </div>
               <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -196,7 +196,7 @@ export default function Home() {
             <div className="absolute -right-16 -bottom-28 w-80 h-80 bg-[#ff6200]/25 blur-3xl rounded-full" />
             <div className="relative">
               <h2 className="text-3xl font-display font-black text-white">{t("home.visit", "Retrouvez B&B Market à Sousse")}</h2>
-              <p className="mt-3 text-white/70">Avenue Khezama, Sousse, Tunisia 4051</p>
+              <p className="mt-3 text-white/70">{t("contact.address_value")}</p>
               <a href="https://www.bing.com/maps/search?v=2&pc=FACEBK&mid=8100&mkt=fr-FR&FORM=FBKPL1&q=Avenue+Khezama%2C+Sousse%2C+Tunisia%2C+4051&cp=35.849300%7E10.613900&lvl=11&style=r" target="_blank" rel="noreferrer" className="mt-6 inline-flex items-center gap-2 rounded-xl bg-[#ff6200] px-5 py-3 font-bold text-white"><MapPin className="w-5 h-5" /> {t("home.map", "Voir sur la carte")}</a>
             </div>
             <div className="relative md:text-end">

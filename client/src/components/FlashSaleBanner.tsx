@@ -83,7 +83,12 @@ export function FlashSaleBanner() {
 
   const [api, setApi] = useState<CarouselApi>();
   const [selected, setSelected] = useState(0);
-  const [paused, setPaused] = useState(false);
+  // Tracked separately so one ending cannot cancel the other: with a single
+  // flag, the mouse leaving would resume the rotation under a keyboard user
+  // still focused inside.
+  const [hovered, setHovered] = useState(false);
+  const [focusedInside, setFocusedInside] = useState(false);
+  const paused = hovered || focusedInside;
   const [reducedMotion, setReducedMotion] = useState(prefersReducedMotion);
 
   // Track the active slide so the dots stay in step with drags and arrows.
@@ -147,15 +152,17 @@ export function FlashSaleBanner() {
     const onSlideChange = () => arm();
     const onVisibilityChange = () => arm();
 
+    // Only a real slide change restarts the countdown. Embla also re-inits on
+    // its own whenever the banner is resized (an image finishing loading, the
+    // window changing width); restarting on that would stretch a slide past
+    // AUTOPLAY_MS for no reason the visitor can see.
     api.on("select", onSlideChange);
-    api.on("reInit", onSlideChange);
     document.addEventListener("visibilitychange", onVisibilityChange);
     arm();
 
     return () => {
       clear();
       api.off("select", onSlideChange);
-      api.off("reInit", onSlideChange);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [api, active.length, paused, reducedMotion]);
@@ -172,10 +179,23 @@ export function FlashSaleBanner() {
       <div
         // Pausing on hover and on focus keeps the offer the user is reading from
         // sliding away underneath them.
-        onMouseEnter={() => setPaused(true)}
-        onMouseLeave={() => setPaused(false)}
-        onFocusCapture={() => setPaused(true)}
-        onBlurCapture={() => setPaused(false)}
+        //
+        // Mouse only: a touch also fires an "enter" but never a matching
+        // "leave", which would leave a phone paused for good after one tap.
+        onPointerEnter={(event) => {
+          if (event.pointerType === "mouse") setHovered(true);
+        }}
+        onPointerLeave={(event) => {
+          if (event.pointerType === "mouse") setHovered(false);
+        }}
+        // Keyboard focus only (`:focus-visible`). A click or tap on an arrow or
+        // a dot also focuses it, and that focus stays there after the pointer
+        // has gone - counting it would stop the rotation until the visitor
+        // happened to click somewhere else.
+        onFocusCapture={(event) => setFocusedInside((event.target as HTMLElement).matches(":focus-visible"))}
+        onBlurCapture={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocusedInside(false);
+        }}
       >
         <Carousel
           // Remount on a direction flip so embla re-initialises with the correct
@@ -191,7 +211,9 @@ export function FlashSaleBanner() {
               return (
                 <CarouselItem key={product.id} aria-label={product.name}>
                   <div
-                    className="relative overflow-hidden rounded-[2rem] text-white shadow-2xl"
+                    // `h-full` so every slide matches the tallest one; otherwise a
+                    // short slide leaves a blank band above the dots.
+                    className="relative h-full overflow-hidden rounded-[2rem] text-white shadow-2xl"
                     style={{
                       background:
                         "linear-gradient(115deg, #04382a 0%, #063f2e 45%, #0a5a42 100%)",
@@ -229,7 +251,9 @@ export function FlashSaleBanner() {
                           {t("flash_sale.badge", "Vente Flash")}
                         </span>
 
-                        <h2 className="mt-4 font-display text-3xl font-black leading-tight sm:text-4xl lg:text-5xl">
+                        {/* Explicit white: the global heading rule is slate-900,
+                            which is unreadable on the green banner. */}
+                        <h2 className="mt-4 break-words font-display text-3xl font-black leading-tight text-white sm:text-4xl lg:text-5xl">
                           {product.name}
                         </h2>
 
@@ -243,7 +267,7 @@ export function FlashSaleBanner() {
                         </div>
 
                         {promo.promoEnd && (
-                          <p className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-white/80">
+                          <p className="mt-3 flex items-center gap-2 text-sm font-semibold text-white/80">
                             <CalendarClock className="h-4 w-4" />
                             {t("promotion.ends_at", "Offre valide jusqu'au {{date}}", {
                               date: formatDate(promo.promoEnd, i18n.language),
@@ -253,7 +277,7 @@ export function FlashSaleBanner() {
 
                         <Link
                           href={`/products/${product.id}`}
-                          className="mt-7 inline-flex items-center gap-2 rounded-2xl bg-[#ff6200] px-7 py-3.5 text-base font-black text-white shadow-lg shadow-black/20 transition-transform hover:-translate-y-0.5 hover:bg-[#ff7a26] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[#063f2e]"
+                          className="mt-7 flex w-fit items-center gap-2 rounded-2xl bg-[#ff6200] px-7 py-3.5 text-base font-black text-white shadow-lg shadow-black/20 transition-transform hover:-translate-y-0.5 hover:bg-[#ff7a26] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-[#063f2e]"
                         >
                           <ShoppingBag className="h-5 w-5" />
                           {t("flash_sale.cta", "J'en profite")}
@@ -269,14 +293,16 @@ export function FlashSaleBanner() {
           {many && (
             <>
               {/* Override the primitive's outside placement so the arrows sit on
-                  the banner itself. `start`/`end` swap sides with the direction. */}
+                  the banner itself. `start`/`end` swap sides with the direction.
+                  Hidden on phones, where they would cover the stacked title and
+                  price; the banner is swiped there and the dots remain. */}
               <CarouselPrevious
                 aria-label={t("flash_sale.previous", "Offre précédente")}
-                className="start-3 h-11 w-11 border-0 bg-white/90 text-[#063f2e] shadow-xl backdrop-blur hover:bg-white hover:text-[#063f2e] focus-visible:ring-2 focus-visible:ring-[#ff6200]"
+                className="hidden sm:inline-flex start-3 h-11 w-11 border-0 bg-white/90 text-[#063f2e] shadow-xl backdrop-blur hover:bg-white hover:text-[#063f2e] focus-visible:ring-2 focus-visible:ring-[#ff6200]"
               />
               <CarouselNext
                 aria-label={t("flash_sale.next", "Offre suivante")}
-                className="end-3 h-11 w-11 border-0 bg-white/90 text-[#063f2e] shadow-xl backdrop-blur hover:bg-white hover:text-[#063f2e] focus-visible:ring-2 focus-visible:ring-[#ff6200]"
+                className="hidden sm:inline-flex end-3 h-11 w-11 border-0 bg-white/90 text-[#063f2e] shadow-xl backdrop-blur hover:bg-white hover:text-[#063f2e] focus-visible:ring-2 focus-visible:ring-[#ff6200]"
               />
             </>
           )}

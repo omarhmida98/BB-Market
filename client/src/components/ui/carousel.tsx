@@ -75,6 +75,10 @@ const Carousel = React.forwardRef<
       {
         ...opts,
         axis: orientation === "horizontal" ? "x" : "y",
+        // Embla does not read the DOM direction: without this its scroll maths
+        // stay LTR under RTL content, which leaves the slides off-screen and
+        // both arrows disabled in Arabic.
+        direction: dir,
       },
       plugins
     )
@@ -154,6 +158,7 @@ const Carousel = React.forwardRef<
       >
         <div
           ref={ref}
+          dir={dir}
           onKeyDownCapture={handleKeyDown}
           className={cn("relative", className)}
           role="region"

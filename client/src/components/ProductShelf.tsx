@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "wouter";
 import { ArrowRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -42,6 +43,9 @@ function viewAllHref(shelf: HomepageShelf): string {
  */
 function ShelfTile({ shelf, locale }: { shelf: HomepageShelf; locale: string }) {
   const href = shelf.tileHref?.trim() || viewAllHref(shelf);
+  // Remembered per URL rather than as a flag, so a replaced image gets its own
+  // chance to load instead of inheriting the old one's failure.
+  const [failedImageUrl, setFailedImageUrl] = useState<string | null>(null);
   // Text comes from the reader's language with a French fallback; the shelf
   // heading stands in when the tile has no title/CTA of its own.
   const localizedTitle = sectionTitle(shelf, locale);
@@ -51,17 +55,19 @@ function ShelfTile({ shelf, locale }: { shelf: HomepageShelf; locale: string }) 
 
   const body = (
     <>
-      {shelf.tileImageUrl ? (
+      {shelf.tileImageUrl && failedImageUrl !== shelf.tileImageUrl ? (
         <img
           src={shelf.tileImageUrl}
           alt=""
           loading="lazy"
           decoding="async"
           className="absolute inset-0 h-full w-full object-cover"
+          onError={() => setFailedImageUrl(shelf.tileImageUrl)}
         />
       ) : (
-        // No image configured. A branded gradient stands in so the tile still
-        // reads as a deliberate panel rather than an empty box.
+        // No image configured, or it failed to load. A branded gradient stands
+        // in so the tile still reads as a deliberate panel rather than an empty
+        // box or a broken-image icon.
         <div
           aria-hidden
           className="absolute inset-0"
@@ -73,10 +79,10 @@ function ShelfTile({ shelf, locale }: { shelf: HomepageShelf; locale: string }) 
       <div aria-hidden className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/35 to-black/10" />
 
       <div className="relative flex h-full flex-col justify-end gap-2 p-5">
-        <h3 className="font-display text-xl font-black leading-tight text-white">{title}</h3>
-        {subtitle && <p className="text-sm leading-snug text-white/85">{subtitle}</p>}
+        <h3 className="font-display text-xl font-black leading-tight text-white line-clamp-5 break-words">{title}</h3>
+        {subtitle && <p className="text-sm leading-snug text-white/85 line-clamp-4 break-words">{subtitle}</p>}
         <span className="mt-2 inline-flex w-fit items-center gap-1.5 rounded-xl bg-[#ff6200] px-3.5 py-2 text-sm font-bold text-white">
-          {cta} <ArrowRight className="h-4 w-4 rtl:rotate-180" />
+          {cta} <ArrowRight className="h-4 w-4 shrink-0 rtl:rotate-180" />
         </span>
       </div>
     </>
@@ -118,6 +124,12 @@ export function ProductShelf({ shelf }: { shelf: HomepageShelf }) {
   const dir = normalizeHomepageLocale(i18n.language) === "ar" ? "rtl" : "ltr";
   const title = sectionTitle(shelf, i18n.language);
   const products = shelf.products ?? [];
+  const hasTile = Boolean(
+    shelf.tileImageUrl ||
+      sectionTileTitle(shelf, i18n.language) ||
+      sectionTileSubtitle(shelf, i18n.language) ||
+      sectionTileCtaLabel(shelf, i18n.language),
+  );
 
   if (products.length === 0) return null;
 
@@ -132,7 +144,7 @@ export function ProductShelf({ shelf }: { shelf: HomepageShelf }) {
           <div className="flex items-end justify-between gap-4 mb-6">
             <div className="min-w-0">
               <p className="text-[#ff6200] font-black uppercase tracking-[.22em] text-xs mb-2">B&amp;B MARKET</p>
-              <h2 className="text-2xl sm:text-3xl font-display font-black text-foreground truncate">{title}</h2>
+              <h2 className="text-2xl sm:text-3xl font-display font-black text-foreground line-clamp-2 break-words sm:line-clamp-1" title={title}>{title}</h2>
             </div>
 
             {/* Arrows live in the header row rather than over the cards, so they
@@ -151,10 +163,7 @@ export function ProductShelf({ shelf }: { shelf: HomepageShelf }) {
           </div>
 
           <CarouselContent className="-ms-4">
-            {(shelf.tileImageUrl ||
-              sectionTileTitle(shelf, i18n.language) ||
-              sectionTileSubtitle(shelf, i18n.language) ||
-              sectionTileCtaLabel(shelf, i18n.language)) && (
+            {hasTile && (
               <CarouselItem className="basis-auto w-52 sm:w-64 lg:w-72">
                 <ShelfTile shelf={shelf} locale={i18n.language} />
               </CarouselItem>
@@ -168,8 +177,10 @@ export function ProductShelf({ shelf }: { shelf: HomepageShelf }) {
         </Carousel>
 
         {/* On small screens the header arrows are hidden, so the shelf needs its
-            own way out - the full list is always one tap away. */}
-        <div className="mt-5 sm:hidden">
+            own way out - the full list is always one tap away. On desktop the
+            tile's button is that way out, so the link only shows there when the
+            shelf has no tile. */}
+        <div className={hasTile ? "mt-5 sm:hidden" : "mt-5"}>
           <Link
             href={viewAllHref(shelf)}
             className="text-primary font-bold inline-flex items-center gap-2"

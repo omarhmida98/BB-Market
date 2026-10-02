@@ -66,8 +66,10 @@ export function ProductCard({ product }: ProductCardProps) {
           decoding="async"
           className="w-full h-full object-contain transform group-hover:scale-105 transition-transform duration-700 ease-in-out"
         />
-        <div className="absolute top-4 start-4 z-20 flex flex-col items-start gap-2">
-          <span className="px-3 py-1 text-xs font-semibold bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm text-primary rounded-full shadow-sm">
+        {/* Width is capped short of the heart in the opposite corner, so a long
+            category name truncates instead of running underneath it. */}
+        <div className="absolute top-4 start-4 z-20 flex max-w-[calc(100%-5.5rem)] flex-col items-start gap-2">
+          <span className="max-w-full truncate px-3 py-1 text-xs font-semibold bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm text-primary rounded-full shadow-sm" title={product.category}>
             {product.category}
           </span>
           <span
@@ -104,13 +106,17 @@ export function ProductCard({ product }: ProductCardProps) {
       </div>
 
       <div className="p-6 flex flex-col flex-grow">
-        <h3 className="font-display font-bold text-xl mb-2 group-hover:text-primary transition-colors text-slate-900 dark:text-slate-100">
-          {product.name}
+        {/* <bdi> keeps a French name or description in its own reading order on
+            the Arabic site, so its punctuation does not jump to the wrong end. */}
+        <h3 className="font-display font-bold text-xl mb-2 line-clamp-3 break-words group-hover:text-primary transition-colors text-slate-900 dark:text-slate-100" title={product.name}>
+          <bdi>{product.name}</bdi>
         </h3>
-        <p className="text-muted-foreground text-sm line-clamp-3 mb-4 flex-grow">
-          {product.description}
+        <p className="text-muted-foreground text-sm line-clamp-3 break-words mb-4 flex-grow">
+          <bdi>{product.description}</bdi>
         </p>
-        <div className="flex items-end justify-between gap-3 mb-5">
+        {/* Wraps so the stock count drops under the price on a narrow shelf card
+            instead of squeezing the price onto two lines. */}
+        <div className="flex flex-wrap items-end justify-between gap-x-3 gap-y-1 mb-5">
           {/* Single pricing renderer, so the card cannot disagree with the detail
               page or the admin list about what this product costs right now. */}
           <PromoPrice product={product} />

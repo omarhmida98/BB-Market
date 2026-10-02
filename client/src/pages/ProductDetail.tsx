@@ -25,7 +25,7 @@ export default function ProductDetail() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-white flex justify-center items-center">
+      <div className="min-h-screen bg-background flex justify-center items-center">
         <Loader2 className="w-10 h-10 text-primary animate-spin" />
       </div>
     );
@@ -39,21 +39,21 @@ export default function ProductDetail() {
 
 
   return (
-    <div className="min-h-screen font-sans relative">
+    <div className="min-h-screen font-sans relative bg-background text-foreground">
       <SiteBackground />
       <Navbar />
 
       <div className="pt-32 pb-20">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
 
-          <Link href="/products" className="inline-flex items-center gap-2 text-slate-500 hover:text-primary transition-colors mb-8">
-            <ArrowLeft className="w-4 h-4" /> {t("product_detail.back_to_products")}
+          <Link href="/products" className="inline-flex items-center gap-2 text-muted-foreground hover:text-primary transition-colors mb-8">
+            <ArrowLeft className="w-4 h-4 rtl:rotate-180" /> {t("product_detail.back_to_products")}
           </Link>
 
-          <div className="bg-white/80 backdrop-blur-md rounded-3xl overflow-hidden shadow-xl border border-slate-200/50">
+          <div className="bg-card/80 backdrop-blur-md rounded-3xl overflow-hidden shadow-xl border border-border">
             <div className="grid lg:grid-cols-2">
               {/* Image Section */}
-              <div className="relative h-96 lg:h-auto bg-gray-100 cursor-pointer" onClick={() => setIsImageViewerOpen(true)}>
+              <div className="relative h-96 lg:h-auto bg-gray-100 dark:bg-slate-900 cursor-pointer" onClick={() => setIsImageViewerOpen(true)}>
                 {/* Decorative pattern */}
                 <div className="absolute inset-0 opacity-5 bg-[radial-gradient(#000_1px,transparent_1px)] [background-size:16px_16px]"></div>
 
@@ -65,18 +65,18 @@ export default function ProductDetail() {
               </div>
 
               {/* Content Section */}
-              <div className="p-8 lg:p-12 flex flex-col justify-center">
+              <div className="p-8 lg:p-12 flex flex-col justify-center min-w-0">
                 <motion.div
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.5 }}
                 >
-                  <span className="inline-block px-4 py-1.5 rounded-full bg-blue-50 text-primary text-sm font-semibold mb-6">
+                  <span className="inline-block px-4 py-1.5 rounded-full bg-primary/10 text-primary text-sm font-semibold mb-6 max-w-full break-words">
                     {product.category}
                   </span>
 
-                  <h1 className="text-4xl lg:text-5xl font-display font-bold text-slate-900 mb-6 leading-tight">
-                    {product.name}
+                  <h1 className="text-4xl lg:text-5xl font-display font-bold text-foreground mb-6 leading-tight break-words">
+                    <bdi>{product.name}</bdi>
                   </h1>
 
                   {/* Same component as the card and the admin list, so all three always agree on
@@ -86,8 +86,8 @@ export default function ProductDetail() {
                     <PromoPrice product={product} size="lg" />
                   </div>
 
-                  <div className="prose prose-lg text-slate-600 mb-8 leading-relaxed">
-                    <p>{product.description}</p>
+                  <div className="prose prose-lg text-muted-foreground mb-8 leading-relaxed break-words">
+                    <p><bdi>{product.description}</bdi></p>
                   </div>
 
                   {/* Primary purchase action, using the shared cart store. */}

@@ -55,6 +55,13 @@ export function useHomepageShelves() {
   return useQuery<HomepageShelf[]>({
     queryKey: ["/api/homepage-sections"],
     queryFn: fetchHomepageShelves,
+    // The app-wide default never refetches. An admin invalidation only reaches
+    // the tab it ran in, so a homepage open in another tab would keep showing
+    // the old shelves until a hard reload; refetching on mount and on focus
+    // picks the change up as soon as that tab is looked at again.
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
   });
 }
 

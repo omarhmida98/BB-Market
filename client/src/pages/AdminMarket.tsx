@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { BarChart3, Boxes, ClipboardList, FolderPlus, LayoutGrid, LogOut, PackagePlus, ShoppingBag, Trash2, Share2, Eye, Save, Loader2, MapPin, Mail, Phone, StickyNote, CreditCard, Hash, Clock, Truck, ArrowDown, ArrowUp, Pencil, RotateCcw } from "lucide-react";
+import { BarChart3, Boxes, ClipboardList, FolderPlus, LayoutGrid, LogOut, PackagePlus, ShoppingBag, Trash2, Share2, Eye, Save, Loader2, MapPin, Mail, Phone, StickyNote, CreditCard, Hash, Clock, Truck, ArrowDown, ArrowUp, Pencil, RotateCcw, ImagePlus } from "lucide-react";
 import { FaWhatsapp } from "react-icons/fa";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
 import { SocialEmbed, platformIcon } from "@/components/SocialEmbed";
-import { SOCIAL_PLATFORMS, computeDeliveryFee, PRODUCT_LOW_STOCK_THRESHOLD, PRODUCT_CATEGORIES, HOMEPAGE_SECTION_TYPES, HOMEPAGE_SECTION_MIN_PRODUCTS, HOMEPAGE_SECTION_MAX_PRODUCTS, HOMEPAGE_SECTION_DEFAULT_PRODUCTS, HOMEPAGE_LOCALES, type HomepageLocale, type HomepageSectionType, type ProductListResponse, type ProductSort, type ProductStockFilter, type SocialMediaEmbed, type SocialPlatform, type DeliverySettings, type FulfillmentMethod } from "@shared/schema";
+import { SOCIAL_PLATFORMS, computeDeliveryFee, PRODUCT_LOW_STOCK_THRESHOLD, HOMEPAGE_SECTION_TYPES, HOMEPAGE_SECTION_MIN_PRODUCTS, HOMEPAGE_SECTION_MAX_PRODUCTS, HOMEPAGE_SECTION_DEFAULT_PRODUCTS, HOMEPAGE_TILE_IMAGE_MAX_BYTES, HOMEPAGE_TILE_IMAGE_MIME_TYPES, HOMEPAGE_TILE_IMAGE_EXTENSIONS, HOMEPAGE_LOCALES, type HomepageLocale, type HomepageSectionType, type ProductListResponse, type ProductSort, type ProductStockFilter, type SocialMediaEmbed, type SocialPlatform, type DeliverySettings, type FulfillmentMethod } from "@shared/schema";
 import { useProducts } from "@/hooks/use-products";
 import { PromoPrice, PromotionStatusBadge } from "@/components/PromoPrice";
 import {
@@ -964,6 +965,10 @@ type HomepageSectionRow = {
   tileCtaLabelEn: string | null;
   tileCtaLabelAr: string | null;
   tileHref: string | null;
+  /** Products the public homepage shows for this shelf right now. */
+  visibleProductCount?: number;
+  /** Products the shelf would hold if no shelf above it had taken them. */
+  matchingProductCount?: number;
 };
 
 /**
@@ -1160,11 +1165,132 @@ function sectionErrorMessage(error: unknown, t: TFunction): string {
   return raw || t("admin.homepage_error_generic");
 }
 
+/**
+ * The shelf tile image: pick a file, see it, replace it or remove it.
+ *
+ * The file is uploaded as soon as it is chosen and only the returned URL is kept
+ * in the draft, so the section itself is still saved as plain JSON through the
+ * same create/update routes as before. `value` may equally be a URL typed in
+ * before uploads existed; it is previewed and kept the same way.
+ *
+ * The type and size checks here only spare the admin a wasted upload. The server
+ * repeats them and is the one that decides.
+ */
+function TileImageField({
+  value,
+  onChange,
+  onUploadingChange,
+}: {
+  value: string;
+  onChange: (url: string) => void;
+  onUploadingChange: (uploading: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const { toast } = useToast();
+  const inputRef = useRef<HTMLInputElement>(null);
+  // The picked file, shown from memory while it uploads so the preview is instant.
+  const [localPreview, setLocalPreview] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [broken, setBroken] = useState(false);
+
+  useEffect(() => setBroken(false), [value, localPreview]);
+  useEffect(() => () => { if (localPreview) URL.revokeObjectURL(localPreview); }, [localPreview]);
+
+  const fail = (description: string) =>
+    toast({ variant: "destructive", title: t("admin.homepage_error_image_upload"), description });
+
+  const pick = async (file: File | undefined) => {
+    if (!file) return;
+    const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+    if (
+      !(HOMEPAGE_TILE_IMAGE_MIME_TYPES as readonly string[]).includes(file.type) ||
+      !(HOMEPAGE_TILE_IMAGE_EXTENSIONS as readonly string[]).includes(extension)
+    ) {
+      return fail(t("admin.homepage_error_image_type"));
+    }
+    if (file.size > HOMEPAGE_TILE_IMAGE_MAX_BYTES) return fail(t("admin.homepage_error_image_too_large"));
+
+    setLocalPreview(URL.createObjectURL(file));
+    setUploading(true);
+    onUploadingChange(true);
+    try {
+      const body = new FormData();
+      body.append("image", file);
+      const { url } = await jsonFetch<{ url: string }>("/api/homepage-sections/tile-image", { method: "POST", body });
+      onChange(url);
+    } catch (error) {
+      toast({ variant: "destructive", title: t("admin.homepage_error_image_upload"), description: sectionErrorMessage(error, t) });
+    } finally {
+      // On failure this falls back to whatever image the section had before.
+      setLocalPreview(null);
+      setUploading(false);
+      onUploadingChange(false);
+    }
+  };
+
+  const preview = localPreview ?? value.trim();
+  const choose = () => inputRef.current?.click();
+
+  return (
+    <div>
+      <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{t("admin.homepage_tile_image")}</span>
+      <input
+        ref={inputRef}
+        type="file"
+        accept={HOMEPAGE_TILE_IMAGE_MIME_TYPES.join(",")}
+        className="hidden"
+        onChange={(event) => {
+          void pick(event.target.files?.[0]);
+          // Cleared so picking the same file again still fires a change.
+          event.target.value = "";
+        }}
+      />
+
+      {preview ? (
+        <div className="mt-1 flex flex-wrap items-center gap-4">
+          <div className="relative h-28 w-24 shrink-0 overflow-hidden rounded-xl border border-border bg-secondary">
+            {broken ? (
+              <div className="flex h-full w-full items-center justify-center p-2 text-center text-[11px] text-muted-foreground">
+                {t("admin.homepage_tile_image_broken")}
+              </div>
+            ) : (
+              <img src={preview} alt={t("admin.homepage_tile_image_preview")} className="h-full w-full object-cover" onError={() => setBroken(true)} />
+            )}
+            {uploading && (
+              <div className="absolute inset-0 flex items-center justify-center bg-background/70">
+                <Loader2 className="w-5 h-5 animate-spin" />
+              </div>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-sm font-bold">
+            <button type="button" onClick={choose} disabled={uploading} className="px-3 py-2 rounded-xl border border-border hover:bg-black/5 dark:hover:bg-white/10 disabled:opacity-50">
+              {t("admin.homepage_tile_image_replace")}
+            </button>
+            <button type="button" onClick={() => onChange("")} disabled={uploading} className="px-3 py-2 rounded-xl text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-50">
+              {t("admin.homepage_tile_image_remove")}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button type="button" onClick={choose} className="mt-1 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-border px-4 py-3 text-sm font-bold hover:bg-black/5 dark:hover:bg-white/10">
+          <ImagePlus className="w-4 h-4" /> {t("admin.homepage_tile_image_choose")}
+        </button>
+      )}
+      <p className="text-xs text-muted-foreground mt-2">
+        {t("admin.homepage_tile_image_formats", { size: HOMEPAGE_TILE_IMAGE_MAX_BYTES / (1024 * 1024) })}
+      </p>
+    </div>
+  );
+}
+
 function HomepageSectionsPanel() {
   const { t, i18n } = useTranslation();
   const { toast } = useToast();
   const [draft, setDraft] = useState<HomepageSectionDraft>(EMPTY_SECTION_DRAFT);
   const [editingId, setEditingId] = useState<number | null>(null);
+  // The shelf awaiting delete confirmation, or null when the dialog is closed.
+  const [pendingDelete, setPendingDelete] = useState<HomepageSectionRow | null>(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
   // Open the form on the language the admin is actually using, so the obvious
   // thing to edit is the one on screen.
   const [activeLang, setActiveLang] = useState<HomepageLocale>(() => normalizeHomepageLocale(i18n.language));
@@ -1173,6 +1299,15 @@ function HomepageSectionsPanel() {
     queryKey: ["/api/admin/homepage-sections"],
     queryFn: () => jsonFetch("/api/admin/homepage-sections"),
   });
+
+  // The same category list the product form offers, so a category shelf is
+  // matched against a name products can actually carry. A value already stored
+  // on the shelf being edited is kept as an option even if that category has
+  // since been removed, so opening the form never silently changes it.
+  const categories = useQuery<Category[]>({ queryKey: ["/api/categories"], queryFn: () => jsonFetch("/api/categories") });
+  const activeCategoryNames = (categories.data || []).filter((category) => category.active).map((category) => category.name);
+  const categoryOptions =
+    draft.category && !activeCategoryNames.includes(draft.category) ? [draft.category, ...activeCategoryNames] : activeCategoryNames;
 
   /**
    * Both caches, not just this one.
@@ -1188,6 +1323,39 @@ function HomepageSectionsPanel() {
     queryClient.invalidateQueries({ queryKey: ["/api/homepage-sections"] });
   };
 
+  /**
+   * Say what actually happened to the shelf, not just that the row was written.
+   *
+   * A shelf with no products is hidden from the homepage on purpose, so "saved"
+   * alone would leave the admin looking for a section that is not going to
+   * appear. The refreshed admin list carries the count the homepage really shows,
+   * so the toast is decided from that rather than guessed.
+   */
+  const announceSaved = async (id: number, savedTitle: string) => {
+    queryClient.invalidateQueries({ queryKey: ["/api/homepage-sections"] });
+    let row: HomepageSectionRow | undefined;
+    try {
+      const list = await queryClient.fetchQuery<HomepageSectionRow[]>({
+        queryKey: ["/api/admin/homepage-sections"],
+        queryFn: () => jsonFetch("/api/admin/homepage-sections"),
+        staleTime: 0,
+      });
+      row = list.find((item) => item.id === id);
+    } catch {
+      // The save itself succeeded; fall through to the plain confirmation.
+    }
+    if (row && !row.enabled) {
+      toast({ title: savedTitle, description: t("admin.homepage_saved_disabled") });
+    } else if (row && row.visibleProductCount === 0) {
+      toast({
+        title: row.matchingProductCount ? t("admin.homepage_saved_duplicates") : t("admin.homepage_saved_no_match"),
+        description: t("admin.homepage_saved_hidden_hint"),
+      });
+    } else {
+      toast({ title: savedTitle });
+    }
+  };
+
   const createSection = useMutation({
     mutationFn: (payload: ReturnType<typeof toSectionPayload>) =>
       jsonFetch<HomepageSectionRow>("/api/homepage-sections", {
@@ -1195,10 +1363,9 @@ function HomepageSectionsPanel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       }),
-    onSuccess: () => {
+    onSuccess: async (saved) => {
       setDraft(EMPTY_SECTION_DRAFT);
-      invalidate();
-      toast({ title: t("admin.homepage_created") });
+      await announceSaved(saved.id, t("admin.homepage_created"));
     },
     onError: (error: unknown) =>
       toast({ variant: "destructive", title: t("admin.homepage_save_failed"), description: sectionErrorMessage(error, t) }),
@@ -1211,10 +1378,9 @@ function HomepageSectionsPanel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       }),
-    onSuccess: () => {
+    onSuccess: async (saved) => {
       setEditingId(null);
-      invalidate();
-      toast({ title: t("admin.homepage_updated") });
+      await announceSaved(saved.id, t("admin.homepage_updated"));
     },
     onError: (error: unknown) =>
       toast({ variant: "destructive", title: t("admin.homepage_save_failed"), description: sectionErrorMessage(error, t) }),
@@ -1314,7 +1480,8 @@ function HomepageSectionsPanel() {
   };
 
   const field = (key: keyof HomepageSectionDraft) => (value: string) => setDraft((current) => ({ ...current, [key]: value }));
-  const busy = createSection.isPending || updateSection.isPending;
+  // Saving mid-upload would store the section without the image being sent.
+  const busy = createSection.isPending || updateSection.isPending || uploadingImage;
   const editingSection = editingId === null ? null : rows.find((row) => row.id === editingId) || null;
 
   return (
@@ -1359,6 +1526,7 @@ function HomepageSectionsPanel() {
                 </span>
                 <Input
                   required={activeLang === "fr"}
+                  dir={activeLang === "ar" ? "rtl" : "ltr"}
                   value={draft[HOMEPAGE_TITLE_FIELDS[activeLang]]}
                   onChange={field(HOMEPAGE_TITLE_FIELDS[activeLang])}
                   placeholder={t("admin.homepage_title_placeholder")}
@@ -1368,17 +1536,17 @@ function HomepageSectionsPanel() {
 
               <label className="block">
                 <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{t("admin.homepage_tile_title")}</span>
-                <Input value={draft[HOMEPAGE_TILE_TITLE_FIELDS[activeLang]]} onChange={field(HOMEPAGE_TILE_TITLE_FIELDS[activeLang])} className="mt-1" />
+                <Input dir={activeLang === "ar" ? "rtl" : "ltr"} value={draft[HOMEPAGE_TILE_TITLE_FIELDS[activeLang]]} onChange={field(HOMEPAGE_TILE_TITLE_FIELDS[activeLang])} className="mt-1" />
               </label>
 
               <label className="block">
                 <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{t("admin.homepage_tile_subtitle")}</span>
-                <Input value={draft[HOMEPAGE_TILE_SUBTITLE_FIELDS[activeLang]]} onChange={field(HOMEPAGE_TILE_SUBTITLE_FIELDS[activeLang])} className="mt-1" />
+                <Input dir={activeLang === "ar" ? "rtl" : "ltr"} value={draft[HOMEPAGE_TILE_SUBTITLE_FIELDS[activeLang]]} onChange={field(HOMEPAGE_TILE_SUBTITLE_FIELDS[activeLang])} className="mt-1" />
               </label>
 
               <label className="block">
                 <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{t("admin.homepage_tile_cta")}</span>
-                <Input value={draft[HOMEPAGE_TILE_CTA_FIELDS[activeLang]]} onChange={field(HOMEPAGE_TILE_CTA_FIELDS[activeLang])} className="mt-1" />
+                <Input dir={activeLang === "ar" ? "rtl" : "ltr"} value={draft[HOMEPAGE_TILE_CTA_FIELDS[activeLang]]} onChange={field(HOMEPAGE_TILE_CTA_FIELDS[activeLang])} className="mt-1" />
               </label>
             </div>
 
@@ -1399,7 +1567,7 @@ function HomepageSectionsPanel() {
               <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{t("admin.homepage_field_category")}</span>
               <select className="field mt-1" value={draft.category} onChange={e => field("category")(e.target.value)}>
                 <option value="">{t("admin.homepage_pick_category")}</option>
-                {PRODUCT_CATEGORIES.map((value) => (
+                {categoryOptions.map((value) => (
                   <option key={value} value={value}>{value}</option>
                 ))}
               </select>
@@ -1448,13 +1616,10 @@ function HomepageSectionsPanel() {
             <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-1">{t("admin.homepage_tile_optional")}</p>
             <p className="text-xs text-muted-foreground mb-4">{t("admin.homepage_tile_hint")}</p>
             <div className="grid md:grid-cols-2 gap-4">
-              <label className="block">
-                <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{t("admin.homepage_tile_image")}</span>
-                <Input value={draft.tileImageUrl} onChange={field("tileImageUrl")} placeholder="https://..." className="mt-1" />
-              </label>
+              <TileImageField value={draft.tileImageUrl} onChange={field("tileImageUrl")} onUploadingChange={setUploadingImage} />
               <label className="block">
                 <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{t("admin.homepage_tile_href")}</span>
-                <Input value={draft.tileHref} onChange={field("tileHref")} placeholder="/products?promo=active" className="mt-1" />
+                <Input dir="ltr" value={draft.tileHref} onChange={field("tileHref")} placeholder="/products?promo=active" className="mt-1" />
               </label>
             </div>
             <p className="text-xs text-muted-foreground mt-3">{t("admin.homepage_tile_media_hint")}</p>
@@ -1485,7 +1650,7 @@ function HomepageSectionsPanel() {
         ) : (
           <div className="space-y-3">
             {rows.map((section, index) => (
-              <div key={section.id} className={`p-4 rounded-2xl border bg-background ${section.enabled ? "" : "opacity-60"}`}>
+              <div key={section.id} className={`p-4 rounded-2xl border border-border bg-background ${section.enabled ? "" : "opacity-60"}`}>
                 <div className="flex flex-wrap items-center gap-3">
                   <div className="flex items-center gap-1">
                     <button
@@ -1509,7 +1674,7 @@ function HomepageSectionsPanel() {
                   </div>
 
                   <div className="flex-1 min-w-[12rem]">
-                    <div className="font-black">{sectionTitle(section, i18n.language)}</div>
+                    <div className="font-black break-words">{sectionTitle(section, i18n.language)}</div>
                     <div className="text-xs text-muted-foreground">
                       {t(HOMEPAGE_TYPE_LABEL_KEYS[section.type])}
                       {section.type === "category" && section.category ? ` · ${section.category}` : ""}
@@ -1520,9 +1685,15 @@ function HomepageSectionsPanel() {
                     </div>
                   </div>
 
-                  <span className={`text-xs font-bold px-3 py-1.5 rounded-full ${section.enabled ? "bg-emerald-500/10 text-emerald-600" : "bg-slate-500/10 text-muted-foreground"}`}>
-                    {section.enabled ? t("admin.homepage_enabled") : t("admin.homepage_disabled")}
-                  </span>
+                  {section.enabled && section.visibleProductCount === 0 ? (
+                    <span className="text-xs font-bold px-3 py-1.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-400">
+                      {t("admin.homepage_hidden")}
+                    </span>
+                  ) : (
+                    <span className={`text-xs font-bold px-3 py-1.5 rounded-full ${section.enabled ? "bg-emerald-500/10 text-emerald-600" : "bg-slate-500/10 text-muted-foreground"}`}>
+                      {section.enabled ? t("admin.homepage_enabled") : t("admin.homepage_disabled")}
+                    </span>
+                  )}
 
                   <div className="flex items-center gap-1">
                     <button
@@ -1540,14 +1711,20 @@ function HomepageSectionsPanel() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => deleteSection.mutate(section.id)}
+                      onClick={() => setPendingDelete(section)}
                       aria-label={t("admin.homepage_delete")}
-                      className="p-2 rounded-xl hover:bg-red-50 text-red-500"
+                      className="p-2 rounded-xl hover:bg-red-50 dark:hover:bg-red-950/40 text-red-500"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
+
+                {section.enabled && section.visibleProductCount === 0 && (
+                  <p className="text-xs text-amber-700 dark:text-amber-400 font-bold mt-3">
+                    {section.matchingProductCount ? t("admin.homepage_hidden_duplicates") : t("admin.homepage_hidden_no_match")}
+                  </p>
+                )}
 
                 {editingId === section.id && (
                   <p className="text-xs text-[#ff6200] font-bold mt-3">
@@ -1559,6 +1736,31 @@ function HomepageSectionsPanel() {
           </div>
         )}
       </Panel>
+
+      {/* Deleting a shelf removes it from the live homepage at once and cannot
+          be undone, so it is confirmed rather than fired from a single click. */}
+      <AlertDialog open={pendingDelete !== null} onOpenChange={(open) => { if (!open) setPendingDelete(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("admin.homepage_delete_confirm_title")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("admin.homepage_delete_confirm_desc", { title: pendingDelete ? sectionTitle(pendingDelete, i18n.language) : "" })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("admin.homepage_cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={() => {
+                if (pendingDelete) deleteSection.mutate(pendingDelete.id);
+                setPendingDelete(null);
+              }}
+            >
+              {t("admin.homepage_delete")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

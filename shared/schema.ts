@@ -166,6 +166,17 @@ export const HOMEPAGE_SECTION_MAX_PRODUCTS = 12;
 export const HOMEPAGE_SECTION_DEFAULT_PRODUCTS = 10;
 
 /**
+ * What a shelf tile image upload accepts.
+ *
+ * Shared so the admin form can refuse a file before sending it and the server
+ * can refuse it again on arrival, from the same list. The server check is the
+ * one that counts; the client one only spares the admin a wasted upload.
+ */
+export const HOMEPAGE_TILE_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+export const HOMEPAGE_TILE_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
+export const HOMEPAGE_TILE_IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "webp"] as const;
+
+/**
  * Every piece of customer-visible text is stored once per language.
  *
  * The columns are split (`title_fr`, `title_en`, `title_ar`) rather than kept in

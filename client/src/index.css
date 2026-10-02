@@ -86,7 +86,9 @@
   h5,
   h6 {
     font-family: var(--font-display);
-    @apply font-bold tracking-tight text-slate-900;
+    /* The dark variant matters: without it every heading that sets no colour
+       of its own renders slate-900 on a dark surface. */
+    @apply font-bold tracking-tight text-slate-900 dark:text-slate-100;
   }
 }
 

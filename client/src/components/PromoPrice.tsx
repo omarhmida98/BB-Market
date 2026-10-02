@@ -62,7 +62,7 @@ export function PromoPrice({
         {status === "active" ? (
           <>
             <span
-              className={`${priceClass} text-primary`}
+              className={`${priceClass} text-primary whitespace-nowrap`}
               data-testid="promo-effective-price"
             >
               {format(effectivePrice)}
@@ -70,14 +70,14 @@ export function PromoPrice({
             <span
               className={`${
                 size === "sm" ? "text-xs" : "text-sm"
-              } text-muted-foreground line-through`}
+              } text-muted-foreground line-through whitespace-nowrap`}
               data-testid="promo-regular-price"
             >
               {format(regularPrice)}
             </span>
           </>
         ) : (
-          <span className={`${priceClass} text-primary`} data-testid="promo-effective-price">
+          <span className={`${priceClass} text-primary whitespace-nowrap`} data-testid="promo-effective-price">
             {format(effectivePrice)}
           </span>
         )}

@@ -8,7 +8,7 @@ const __dirname = path.dirname(__filename);
 import { storage } from "./storage.js";
 import { api } from "shared/routes.js";
 import { z } from "zod";
-import { insertCategorySchema, insertOrderSchema, upsertSocialMediaEmbedSchema, insertSettingsSchema, computeDeliveryFee, SOCIAL_PLATFORMS, productQuerySchema, checkPromotion, homepageSectionInputSchema, homepageSectionPatchSchema, type SocialPlatform } from "shared/schema.js";
+import { insertCategorySchema, insertOrderSchema, upsertSocialMediaEmbedSchema, insertSettingsSchema, computeDeliveryFee, SOCIAL_PLATFORMS, productQuerySchema, checkPromotion, homepageSectionInputSchema, homepageSectionPatchSchema, HOMEPAGE_TILE_IMAGE_MAX_BYTES, HOMEPAGE_TILE_IMAGE_MIME_TYPES, HOMEPAGE_TILE_IMAGE_EXTENSIONS, type SocialPlatform } from "shared/schema.js";
 import { resolvePromotion } from "shared/promotions.js";
 import { dbg } from "./debug.js";
 import { toCustomerOrder, toCustomerOrderSummary } from "shared/orders.js";
@@ -23,6 +23,27 @@ import { uploadImage } from "./cloudinary_util.js";
 import { performBackup } from "./backup.js";
 import { resolveDbTarget } from "./db-target.js";
 import { resolveAssetsDir, resolveUploadsDir } from "./paths.js";
+
+/**
+ * Identify a JPEG, PNG or WebP from its leading bytes.
+ *
+ * Returns the extension to store the file under, or `null` when the content is
+ * none of the three - whatever name or MIME type it arrived with.
+ */
+function detectTileImageExtension(buffer: Buffer): "jpg" | "png" | "webp" | null {
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "jpg";
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return "png";
+  }
+  if (
+    buffer.length >= 12 &&
+    buffer.toString("ascii", 0, 4) === "RIFF" &&
+    buffer.toString("ascii", 8, 12) === "WEBP"
+  ) {
+    return "webp";
+  }
+  return null;
+}
 
 /**
  * Route every rejected promise into Express's error middleware.
@@ -157,7 +178,27 @@ app.delete("/api/categories/:id", async (req, res) => {
     const currentUser = req.user as any;
     if (!["admin", "superadmin"].includes(currentUser.role)) return res.sendStatus(403);
     try {
-      res.json(await storage.getHomepageSections(true));
+      // Each row also says how many products the homepage shows for it, so the
+      // admin can tell a hidden shelf from a working one. Hiding empty shelves
+      // is deliberate, but silently hiding them left "saved" and "visible"
+      // indistinguishable in the admin.
+      //
+      //   visibleProductCount  - what the public homepage renders right now, from
+      //                          the same pass the public endpoint uses.
+      //   matchingProductCount - what the shelf would hold on its own. Only
+      //                          differs when a shelf above already took its
+      //                          products, which is the other reason to be empty.
+      const sections = await storage.getHomepageSections(true);
+      const shelves = await storage.queryHomepageShelves();
+      const visible = new Map(shelves.map((shelf) => [shelf.id, shelf.products.length]));
+      const rows = [];
+      for (const section of sections) {
+        const visibleProductCount = section.enabled ? visible.get(section.id) ?? 0 : 0;
+        const matchingProductCount =
+          visibleProductCount > 0 ? visibleProductCount : (await storage.queryHomepageSectionProducts(section)).length;
+        rows.push({ ...section, visibleProductCount, matchingProductCount });
+      }
+      res.json(rows);
     } catch (error) {
       console.error("[HOMEPAGE] admin list failed:", error);
       res.status(500).json({ message: "Unable to load homepage sections" });
@@ -231,6 +272,94 @@ app.delete("/api/categories/:id", async (req, res) => {
     } catch (error: any) {
       res.status(400).json({ message: error?.issues?.[0]?.message || error?.message || "Unable to reorder sections" });
     }
+  });
+
+  /**
+   * Shelf tile image upload.
+   *
+   * Returns `{ url }` and nothing else: the section row is not touched here. The
+   * admin form puts the URL in `tileImageUrl` and saves it through the normal
+   * create/update routes, so an upload that is never saved changes nothing on
+   * the homepage.
+   *
+   * Storage follows the product images: Cloudinary when it is configured, with
+   * the local `/uploads` directory as the fallback and the dev default. The
+   * local directory comes from `resolveUploadsDir()`, which sits outside `dist/`
+   * and is the directory `/uploads` is served from, so a rebuild keeps the file.
+   *
+   * Errors are `admin.homepage_error_*` keys, like the section validation, so
+   * the admin panel can show them in the admin's language.
+   */
+  const tileImageUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: HOMEPAGE_TILE_IMAGE_MAX_BYTES, files: 1 },
+  }).single("image");
+
+  // Runs before multer so an anonymous request is refused without its body
+  // being buffered.
+  const requireAdminForUpload: RequestHandler = (req, res, next) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    if (!["admin", "superadmin"].includes((req.user as any).role)) return res.sendStatus(403);
+    next();
+  };
+
+  app.post("/api/homepage-sections/tile-image", requireAdminForUpload, (req, res) => {
+    tileImageUpload(req, res, async (uploadError: unknown) => {
+      if (uploadError) {
+        const tooLarge = uploadError instanceof multer.MulterError && uploadError.code === "LIMIT_FILE_SIZE";
+        return res
+          .status(tooLarge ? 413 : 400)
+          .json({ message: tooLarge ? "admin.homepage_error_image_too_large" : "admin.homepage_error_image_upload" });
+      }
+      const file = req.file;
+      if (!file) return res.status(400).json({ message: "admin.homepage_error_image_upload" });
+
+      // Three independent checks. The declared MIME type and the extension are
+      // both chosen by the sender, so the file's own leading bytes are what
+      // decide the type - and the stored extension comes from those bytes, never
+      // from the original filename.
+      const declaredExtension = path.extname(file.originalname).slice(1).toLowerCase();
+      const detectedExtension = detectTileImageExtension(file.buffer);
+      if (
+        !(HOMEPAGE_TILE_IMAGE_MIME_TYPES as readonly string[]).includes(file.mimetype) ||
+        !(HOMEPAGE_TILE_IMAGE_EXTENSIONS as readonly string[]).includes(declaredExtension) ||
+        !detectedExtension
+      ) {
+        return res.status(400).json({ message: "admin.homepage_error_image_type" });
+      }
+
+      try {
+        const saveLocally = () => {
+          // Nothing from the request reaches the path: a fixed prefix, the
+          // clock, random bytes and an extension from a fixed list.
+          const filename = `homepage_${Date.now()}_${crypto.randomBytes(8).toString("hex")}.${detectedExtension}`;
+          const uploadsDir = resolveUploadsDir();
+          fs.mkdirSync(uploadsDir, { recursive: true });
+          fs.writeFileSync(path.join(uploadsDir, filename), file.buffer);
+          return `/uploads/${filename}`;
+        };
+
+        const isCloudinaryConfigured =
+          process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET;
+
+        let url: string;
+        if (isCloudinaryConfigured) {
+          try {
+            url = await uploadImage(file.buffer, "homepage");
+          } catch (cloudErr) {
+            console.error("[UPLOAD] Cloudinary failed, falling back to local storage:", cloudErr);
+            url = saveLocally();
+          }
+        } else {
+          url = saveLocally();
+        }
+
+        res.status(201).json({ url });
+      } catch (error) {
+        console.error("[HOMEPAGE] tile image upload failed:", error);
+        res.status(500).json({ message: "admin.homepage_error_image_upload" });
+      }
+    });
   });
 
   // B&B Market orders / checkout

@@ -55,7 +55,7 @@ export function Footer() {
           <div>
             <h4 className="font-display font-bold text-lg mb-5">{t("footer.contact_title")}</h4>
             <div className="space-y-4 text-sm text-white/75">
-              <a href={mapUrl} target="_blank" rel="noreferrer" className="flex gap-3 hover:text-white"><MapPin className="w-5 h-5 text-[#ff6200] shrink-0" /> Avenue Khezama, Sousse, Tunisia 4051</a>
+              <a href={mapUrl} target="_blank" rel="noreferrer" className="flex gap-3 hover:text-white"><MapPin className="w-5 h-5 text-[#ff6200] shrink-0" /> {t("contact.address_value")}</a>
               <a href="tel:+21627903117" className="flex gap-3 hover:text-white"><Phone className="w-5 h-5 text-[#ff6200]" /> +216 27 903 117</a>
               <a href="mailto:bbmarket26@gmail.com" className="flex gap-3 hover:text-white"><Mail className="w-5 h-5 text-[#ff6200]" /> bbmarket26@gmail.com</a>
             </div>
