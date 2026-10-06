@@ -89,7 +89,7 @@ function ShelfTile({ shelf, locale }: { shelf: HomepageShelf; locale: string }) 
   );
 
   const className =
-    "relative flex h-full min-h-64 flex-col overflow-hidden rounded-2xl border border-border shadow-sm transition-shadow duration-300 hover:shadow-xl";
+    "relative flex h-full min-h-56 flex-col overflow-hidden rounded-2xl border border-border shadow-sm transition-shadow duration-300 hover:shadow-xl";
 
   // A tile href may be absolute (an admin linking to a category elsewhere), so
   // only in-app targets go through wouter's Link; the rest are plain anchors.
@@ -134,59 +134,64 @@ export function ProductShelf({ shelf }: { shelf: HomepageShelf }) {
   if (products.length === 0) return null;
 
   return (
-    <section className="py-10" aria-label={title}>
+    <section className="py-5 sm:py-7" aria-label={title}>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        {/* The header lives *inside* the Carousel because the arrows read their
-            state from the carousel context - rendered as siblings they would
-            throw "useCarousel must be used within a <Carousel />". The wrapper
-            is just a provider and a `relative` div, so nothing shifts. */}
-        <Carousel key={dir} dir={dir} opts={{ align: "start", containScroll: "trimSnaps" }} className="relative">
-          <div className="flex items-end justify-between gap-4 mb-6">
-            <div className="min-w-0">
-              <p className="text-[#ff6200] font-black uppercase tracking-[.22em] text-xs mb-2">B&amp;B MARKET</p>
-              <h2 className="text-2xl sm:text-3xl font-display font-black text-foreground line-clamp-2 break-words sm:line-clamp-1" title={title}>{title}</h2>
+        {/* Each shelf is its own framed panel. That is what sets a homepage
+            section apart from the open product grid of the catalogue page, and
+            what keeps two shelves in a row from reading as one long list. */}
+        <div className="rounded-[2rem] border border-border bg-card/75 backdrop-blur-md shadow-sm p-4 sm:p-7 lg:p-8">
+          {/* The header lives *inside* the Carousel because the arrows read their
+              state from the carousel context - rendered as siblings they would
+              throw "useCarousel must be used within a <Carousel />". The wrapper
+              is just a provider and a `relative` div, so nothing shifts. */}
+          <Carousel key={dir} dir={dir} opts={{ align: "start", containScroll: "trimSnaps" }} className="relative">
+            <div className="flex items-center justify-between gap-4 mb-5 sm:mb-6">
+              <div className="flex min-w-0 items-stretch gap-3">
+                <span aria-hidden className="w-1.5 shrink-0 rounded-full bg-[#ff6200]" />
+                <h2 className="text-xl sm:text-2xl font-display font-black text-foreground line-clamp-2 break-words sm:line-clamp-1" title={title}>{title}</h2>
+              </div>
+
+              {/* Arrows live in the header row rather than over the cards, so they
+                  never cover a product image. Hidden on touch-sized screens, where
+                  the shelf is swiped instead. */}
+              <div className="hidden items-center gap-2 shrink-0 sm:flex">
+                <CarouselPrevious
+                  className="static size-10 translate-y-0 -start-0 rounded-full"
+                  aria-label={t("homepage.shelf_prev", "Produits précédents")}
+                />
+                <CarouselNext
+                  className="static size-10 translate-y-0 -end-0 rounded-full"
+                  aria-label={t("homepage.shelf_next", "Produits suivants")}
+                />
+              </div>
             </div>
 
-            {/* Arrows live in the header row rather than over the cards, so they
-                never cover a product image. Hidden on touch-sized screens, where
-                the shelf is swiped instead. */}
-            <div className="hidden items-center gap-2 shrink-0 sm:flex">
-              <CarouselPrevious
-                className="static size-10 translate-y-0 -start-0 rounded-full"
-                aria-label={t("homepage.shelf_prev", "Produits précédents")}
-              />
-              <CarouselNext
-                className="static size-10 translate-y-0 -end-0 rounded-full"
-                aria-label={t("homepage.shelf_next", "Produits suivants")}
-              />
-            </div>
+            <CarouselContent className="-ms-4">
+              {hasTile && (
+                <CarouselItem className="basis-auto w-48 sm:w-56 lg:w-64">
+                  <ShelfTile shelf={shelf} locale={i18n.language} />
+                </CarouselItem>
+              )}
+              {products.map((product) => (
+                <CarouselItem key={product.id} className="basis-auto w-48 sm:w-52 lg:w-56">
+                  <ProductCard product={product} variant="shelf" />
+                </CarouselItem>
+              ))}
+            </CarouselContent>
+          </Carousel>
+
+          {/* On small screens the header arrows are hidden, so the shelf needs its
+              own way out - the full list is always one tap away. On desktop the
+              tile's button is that way out, so the link only shows there when the
+              shelf has no tile. */}
+          <div className={hasTile ? "mt-5 sm:hidden" : "mt-5"}>
+            <Link
+              href={viewAllHref(shelf)}
+              className="text-primary font-bold inline-flex items-center gap-2"
+            >
+              {t("homepage.shelf_view_all", "Tout voir")} <ArrowRight className="h-4 w-4 rtl:rotate-180" />
+            </Link>
           </div>
-
-          <CarouselContent className="-ms-4">
-            {hasTile && (
-              <CarouselItem className="basis-auto w-52 sm:w-64 lg:w-72">
-                <ShelfTile shelf={shelf} locale={i18n.language} />
-              </CarouselItem>
-            )}
-            {products.map((product) => (
-              <CarouselItem key={product.id} className="basis-auto w-56 sm:w-64 lg:w-72">
-                <ProductCard product={product} />
-              </CarouselItem>
-            ))}
-          </CarouselContent>
-        </Carousel>
-
-        {/* On small screens the header arrows are hidden, so the shelf needs its
-            own way out - the full list is always one tap away. On desktop the
-            tile's button is that way out, so the link only shows there when the
-            shelf has no tile. */}
-        <div className={hasTile ? "mt-5 sm:hidden" : "mt-5"}>
-          <Link
-            href={viewAllHref(shelf)}
-            className="text-primary font-bold inline-flex items-center gap-2"
-          >
-            {t("homepage.shelf_view_all", "Tout voir")} <ArrowRight className="h-4 w-4 rtl:rotate-180" />
-          </Link>
         </div>
       </div>
     </section>

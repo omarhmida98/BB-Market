@@ -25,6 +25,41 @@ import { resolveDbTarget } from "./db-target.js";
 import { resolveAssetsDir, resolveUploadsDir } from "./paths.js";
 
 /**
+ * Write an uploaded file to the local uploads directory and return its public
+ * URL (`/uploads/<file>`).
+ *
+ * This is the only place an upload is written to disk. The directory comes from
+ * `resolveUploadsDir()` - UPLOADS_DIR when set, otherwise
+ * `<project root>/public/uploads` - which is the same directory the `/uploads`
+ * static route serves. Writing anywhere else breaks one of two things: the file
+ * is saved where nothing serves it, or it is saved under `dist/`, where the
+ * compiled server lives, and the next `npm run build` deletes it.
+ *
+ * Nothing from the request reaches the path: a fixed prefix, the clock, random
+ * bytes and an extension the caller has already reduced to a short
+ * alphanumeric token.
+ */
+function saveUploadLocally(buffer: Buffer, prefix: string, extension: string): string {
+  const filename = `${prefix}_${Date.now()}_${crypto.randomBytes(8).toString("hex")}.${extension}`;
+  const uploadsDir = resolveUploadsDir();
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  fs.writeFileSync(path.join(uploadsDir, filename), buffer);
+  return `/uploads/${filename}`;
+}
+
+/**
+ * The extension to store an upload under, taken from the name it arrived with.
+ *
+ * The original filename is the sender's to choose, so only a short alphanumeric
+ * extension is accepted from it; anything else falls back to `jpg`, as a
+ * missing extension always has.
+ */
+function uploadExtension(originalName: string): string {
+  const extension = path.extname(originalName).slice(1).toLowerCase();
+  return /^[a-z0-9]{1,5}$/.test(extension) ? extension : "jpg";
+}
+
+/**
  * Identify a JPEG, PNG or WebP from its leading bytes.
  *
  * Returns the extension to store the file under, or `null` when the content is
@@ -329,15 +364,8 @@ app.delete("/api/categories/:id", async (req, res) => {
       }
 
       try {
-        const saveLocally = () => {
-          // Nothing from the request reaches the path: a fixed prefix, the
-          // clock, random bytes and an extension from a fixed list.
-          const filename = `homepage_${Date.now()}_${crypto.randomBytes(8).toString("hex")}.${detectedExtension}`;
-          const uploadsDir = resolveUploadsDir();
-          fs.mkdirSync(uploadsDir, { recursive: true });
-          fs.writeFileSync(path.join(uploadsDir, filename), file.buffer);
-          return `/uploads/${filename}`;
-        };
+        // The extension comes from the detected content, never from the request.
+        const saveLocally = () => saveUploadLocally(file.buffer, "homepage", detectedExtension);
 
         const isCloudinaryConfigured =
           process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET;
@@ -1130,20 +1158,10 @@ app.delete("/api/categories/:id", async (req, res) => {
           stickersImageUrl = await uploadImage(req.file.buffer, 'settings');
         } catch (cloudErr) {
           console.error("[UPLOAD] Cloudinary failed, falling back to local storage:", cloudErr);
-          const ext = req.file.originalname.split('.').pop() || 'jpg';
-          const filename = `settings_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
-          const uploadsDir = path.join(__dirname, "..", "public", "uploads");
-          if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-          fs.writeFileSync(path.join(uploadsDir, filename), req.file.buffer);
-          stickersImageUrl = `/uploads/${filename}`;
+          stickersImageUrl = saveUploadLocally(req.file.buffer, "settings", uploadExtension(req.file.originalname));
         }
       } else {
-        const ext = req.file.originalname.split('.').pop() || 'jpg';
-        const filename = `settings_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
-        const uploadsDir = path.join(__dirname, "..", "public", "uploads");
-        if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-        fs.writeFileSync(path.join(uploadsDir, filename), req.file.buffer);
-        stickersImageUrl = `/uploads/${filename}`;
+        stickersImageUrl = saveUploadLocally(req.file.buffer, "settings", uploadExtension(req.file.originalname));
       }
 
       const settings = await storage.updateSettings({ stickersImageUrl });
@@ -1187,24 +1205,10 @@ app.delete("/api/categories/:id", async (req, res) => {
           imageUrl = await uploadImage(req.file.buffer, 'products');
         } catch (cloudErr) {
           console.error("[UPLOAD] Cloudinary failed, falling back to local storage:", cloudErr);
-          const ext = req.file.originalname.split('.').pop() || 'jpg';
-          const filename = `product_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
-          const uploadsDir = path.join(__dirname, "..", "public", "uploads");
-          if (!fs.existsSync(uploadsDir)) {
-            fs.mkdirSync(uploadsDir, { recursive: true });
-          }
-          fs.writeFileSync(path.join(uploadsDir, filename), req.file.buffer);
-          imageUrl = `/uploads/${filename}`;
+          imageUrl = saveUploadLocally(req.file.buffer, "product", uploadExtension(req.file.originalname));
         }
       } else {
-        const ext = req.file.originalname.split('.').pop() || 'jpg';
-        const filename = `product_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
-        const uploadsDir = path.join(__dirname, "..", "public", "uploads");
-        if (!fs.existsSync(uploadsDir)) {
-          fs.mkdirSync(uploadsDir, { recursive: true });
-        }
-        fs.writeFileSync(path.join(uploadsDir, filename), req.file.buffer);
-        imageUrl = `/uploads/${filename}`;
+        imageUrl = saveUploadLocally(req.file.buffer, "product", uploadExtension(req.file.originalname));
       }
 
       const productData = {
@@ -1403,20 +1407,10 @@ app.delete("/api/categories/:id", async (req, res) => {
           imageUrl = await uploadImage(req.file.buffer, 'promos');
         } catch (cloudErr) {
           console.error("[UPLOAD] Cloudinary failed, falling back to local storage:", cloudErr);
-          const ext = req.file.originalname.split('.').pop() || 'jpg';
-          const filename = `promo_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
-          const uploadsDir = path.join(__dirname, "..", "public", "uploads");
-          if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-          fs.writeFileSync(path.join(uploadsDir, filename), req.file.buffer);
-          imageUrl = `/uploads/${filename}`;
+          imageUrl = saveUploadLocally(req.file.buffer, "promo", uploadExtension(req.file.originalname));
         }
       } else {
-        const ext = req.file.originalname.split('.').pop() || 'jpg';
-        const filename = `promo_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
-        const uploadsDir = path.join(__dirname, "..", "public", "uploads");
-        if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-        fs.writeFileSync(path.join(uploadsDir, filename), req.file.buffer);
-        imageUrl = `/uploads/${filename}`;
+        imageUrl = saveUploadLocally(req.file.buffer, "promo", uploadExtension(req.file.originalname));
       }
 
       const promoData = {
@@ -1581,20 +1575,10 @@ try {
           imageUrl = await uploadImage(req.file.buffer, 'stickers');
         } catch (cloudErr) {
           console.error("[UPLOAD] Cloudinary failed, falling back to local storage:", cloudErr);
-          const ext = req.file.originalname.split('.').pop() || 'jpg';
-          const filename = `sticker_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
-          const uploadsDir = path.join(__dirname, "..", "public", "uploads");
-          if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-          fs.writeFileSync(path.join(uploadsDir, filename), req.file.buffer);
-          imageUrl = `/uploads/${filename}`;
+          imageUrl = saveUploadLocally(req.file.buffer, "sticker", uploadExtension(req.file.originalname));
         }
       } else {
-        const ext = req.file.originalname.split('.').pop() || 'jpg';
-        const filename = `sticker_${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
-        const uploadsDir = path.join(__dirname, "..", "public", "uploads");
-        if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-        fs.writeFileSync(path.join(uploadsDir, filename), req.file.buffer);
-        imageUrl = `/uploads/${filename}`;
+        imageUrl = saveUploadLocally(req.file.buffer, "sticker", uploadExtension(req.file.originalname));
       }
 
       const catalogData = {

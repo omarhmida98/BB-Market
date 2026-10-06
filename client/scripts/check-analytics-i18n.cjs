@@ -89,6 +89,13 @@ const DYNAMIC = [
       (e) => `admin.homepage_error_${e}`,
     ),
   ],
+  // The login page's feature cards keep their keys in a table
+  // (`t(feature.titleKey)`), so they are invisible to the literal scan too -
+  // which is how they once shipped missing from every locale.
+  [
+    "auth.login_feature_",
+    ["secure", "fast", "support"].flatMap((f) => [`auth.login_feature_${f}_title`, `auth.login_feature_${f}_desc`]),
+  ],
 ];
 
 const text = files.map((p) => fs.readFileSync(p, "utf8")).join("\n");

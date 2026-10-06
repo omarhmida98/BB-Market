@@ -11,9 +11,17 @@ import { useTranslation } from "react-i18next";
 
 interface ProductCardProps {
   product: Product & { isAvailable?: boolean }; // Ajout du type optionnel
+  /**
+   * `shelf` is the compact card used inside a homepage section: smaller
+   * picture, no description, no category chip. It is a layout switch only - the
+   * stock rules, the price renderer, the heart and the cart button are the same
+   * code as the catalogue card, so the two can never disagree about a product.
+   */
+  variant?: "default" | "shelf";
 }
 
-export function ProductCard({ product }: ProductCardProps) {
+export function ProductCard({ product, variant = "default" }: ProductCardProps) {
+  const compact = variant === "shelf";
   const { t } = useTranslation();
   const { isSelected, addToSelection, removeFromSelection } = useSelection();
   const selected = isSelected(product.id, 'product');
@@ -57,7 +65,7 @@ export function ProductCard({ product }: ProductCardProps) {
       viewport={{ once: true }}
       className={`group bg-white/70 dark:bg-slate-900/70 backdrop-blur-md rounded-2xl overflow-hidden border ${selected ? 'border-primary shadow-md' : 'border-border shadow-sm'} hover:shadow-xl hover:bg-white/90 dark:hover:bg-slate-900/90 transition-all duration-300 flex flex-col h-full ring-primary/20 ${selected ? 'ring-4' : ''}`}
     >
-      <div className="relative h-64 overflow-hidden bg-white/40 dark:bg-slate-950/40 p-4 cursor-pointer" onClick={() => setIsImageViewerOpen(true)}>
+      <div className={`relative ${compact ? "h-44 p-3" : "h-64 p-4"} overflow-hidden bg-white/40 dark:bg-slate-950/40 cursor-pointer`} onClick={() => setIsImageViewerOpen(true)}>
         <div className="absolute inset-0 bg-slate-900/0 group-hover:bg-slate-900/10 transition-colors duration-300 z-10" />
         <img
           src={product.imageUrl}
@@ -68,10 +76,12 @@ export function ProductCard({ product }: ProductCardProps) {
         />
         {/* Width is capped short of the heart in the opposite corner, so a long
             category name truncates instead of running underneath it. */}
-        <div className="absolute top-4 start-4 z-20 flex max-w-[calc(100%-5.5rem)] flex-col items-start gap-2">
-          <span className="max-w-full truncate px-3 py-1 text-xs font-semibold bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm text-primary rounded-full shadow-sm" title={product.category}>
-            {product.category}
-          </span>
+        <div className={`absolute ${compact ? "top-3 start-3" : "top-4 start-4"} z-20 flex ${compact ? "max-w-[calc(100%-3.25rem)]" : "max-w-[calc(100%-5.5rem)]"} flex-col items-start gap-2`}>
+          {!compact && (
+            <span className="max-w-full truncate px-3 py-1 text-xs font-semibold bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm text-primary rounded-full shadow-sm" title={product.category}>
+              {product.category}
+            </span>
+          )}
           <span
             className={`px-3 py-1 text-xs font-semibold rounded-full shadow-sm ${
               !inStock
@@ -84,7 +94,7 @@ export function ProductCard({ product }: ProductCardProps) {
             {stockLabel}
           </span>
           {selected && (
-            <span className="px-3 py-1 text-xs font-semibold bg-primary text-white rounded-full shadow-sm flex items-center gap-1 animate-in zoom-in-50 duration-300">
+            <span className="px-3 py-1 text-xs font-semibold bg-primary text-white rounded-full shadow-sm flex items-center gap-1 whitespace-nowrap animate-in zoom-in-50 duration-300">
               <Check className="w-3 h-3" /> {t("product_card.selected")}
             </span>
           )}
@@ -100,34 +110,36 @@ export function ProductCard({ product }: ProductCardProps) {
             it above the hover overlay and above the out-of-stock dimmer: a sold-out
             product must stay favouritable, since saving it for later is exactly
             what a customer does when something is temporarily unavailable. */}
-        <div className="absolute top-4 end-4 z-30">
-          <FavoriteButton product={product} variant="overlay" />
+        <div className={`absolute ${compact ? "top-3 end-3" : "top-4 end-4"} z-30`}>
+          <FavoriteButton product={product} variant="overlay" size={compact ? "sm" : "default"} />
         </div>
       </div>
 
-      <div className="p-6 flex flex-col flex-grow">
+      <div className={`${compact ? "p-4" : "p-6"} flex flex-col flex-grow`}>
         {/* <bdi> keeps a French name or description in its own reading order on
             the Arabic site, so its punctuation does not jump to the wrong end. */}
-        <h3 className="font-display font-bold text-xl mb-2 line-clamp-3 break-words group-hover:text-primary transition-colors text-slate-900 dark:text-slate-100" title={product.name}>
+        <h3 className={`font-display font-bold ${compact ? "text-base leading-snug mb-3 line-clamp-2 flex-grow" : "text-xl mb-2 line-clamp-3"} break-words group-hover:text-primary transition-colors text-slate-900 dark:text-slate-100`} title={product.name}>
           <bdi>{product.name}</bdi>
         </h3>
-        <p className="text-muted-foreground text-sm line-clamp-3 break-words mb-4 flex-grow">
-          <bdi>{product.description}</bdi>
-        </p>
+        {!compact && (
+          <p className="text-muted-foreground text-sm line-clamp-3 break-words mb-4 flex-grow">
+            <bdi>{product.description}</bdi>
+          </p>
+        )}
         {/* Wraps so the stock count drops under the price on a narrow shelf card
             instead of squeezing the price onto two lines. */}
-        <div className="flex flex-wrap items-end justify-between gap-x-3 gap-y-1 mb-5">
+        <div className={`flex flex-wrap items-end justify-between gap-x-3 gap-y-1 ${compact ? "mb-3" : "mb-5"}`}>
           {/* Single pricing renderer, so the card cannot disagree with the detail
               page or the admin list about what this product costs right now. */}
-          <PromoPrice product={product} />
-          {inStock && (
+          <PromoPrice product={product} size={compact ? "shelf" : "default"} />
+          {inStock && !compact && (
             <div className="text-xs text-muted-foreground font-semibold whitespace-nowrap">
               {t("product_card.units_left", { count: stock })}
             </div>
           )}
         </div>
 
-        <div className="flex items-center justify-center mt-auto pt-4 border-t border-border">
+        <div className={`flex items-center justify-center mt-auto ${compact ? "pt-3" : "pt-4"} border-t border-border`}>
           {!inStock ? (
             <div
               className="w-full py-2.5 text-sm font-bold rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-center cursor-not-allowed"

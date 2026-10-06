@@ -23,8 +23,11 @@ export function PromoPrice({
   showBadge = true,
 }: {
   product: PromotionCandidate;
-  /** `lg` is used on the detail page; `sm` inside dense admin tables. */
-  size?: "sm" | "default" | "lg";
+  /**
+   * `lg` is used on the detail page, `sm` inside dense admin tables and
+   * `shelf` on the compact cards of a homepage section.
+   */
+  size?: "sm" | "default" | "lg" | "shelf";
   showBadge?: boolean;
 }) {
   const { t, i18n } = useTranslation();
@@ -50,7 +53,9 @@ export function PromoPrice({
       ? "text-4xl font-black"
       : size === "sm"
         ? "text-sm font-bold"
-        : "text-2xl font-black";
+        : size === "shelf"
+          ? "text-lg font-black"
+          : "text-2xl font-black";
 
   // The shelf card and the detail page share this renderer, so a price is
   // grouped and decimal-separated in the reader's locale in both places.

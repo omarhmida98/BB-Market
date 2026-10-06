@@ -12,6 +12,7 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "db:baseline": "tsx scripts/baseline.ts",
     "set-password": "tsx scripts/set-password.ts",
+    "db:reset-data": "tsx scripts/reset-data.ts",
     "test:auth": "tsx scripts/test-registration-role.ts && tsx scripts/test-seed-admin.ts",
     "test:seed": "tsx scripts/test-seed-admin.ts",
     "test:load": "tsx scripts/loadtest-products.ts",
