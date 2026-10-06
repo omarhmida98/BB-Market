@@ -1,5 +1,6 @@
 import "./env.js";
 import express, { type Request, Response, NextFunction } from "express";
+import helmet from "helmet";
 import { registerRoutes } from "./routes.js";
 import { createServer } from "http";
 import { setupCronJobs } from "./cron.js";
@@ -9,6 +10,85 @@ import { PROJECT_ROOT } from "./paths.js";
 
 const app = express();
 const httpServer = createServer(app);
+const isProduction = process.env.NODE_ENV === "production";
+
+// Never advertise the framework.
+app.disable("x-powered-by");
+
+/**
+ * Security headers (helmet), tuned for this app's real third parties.
+ *
+ * The Content-Security-Policy is written out in full rather than left to the
+ * defaults, because the storefront legitimately loads from several external
+ * origins and a blind default would break them:
+ *   - Google Identity Services (sign-in) + Google Analytics (gtag, with an
+ *     inline bootstrap snippet in index.html, hence 'unsafe-inline' on scripts);
+ *   - Google Fonts (stylesheet on googleapis, font files on gstatic);
+ *   - Instagram / TikTok embed scripts, and Instagram / TikTok / Facebook
+ *     embed iframes;
+ *   - product images from Cloudinary, from the local /uploads path, and from the
+ *     social CDNs — covered by `img-src https:` plus data:/blob: for previews.
+ *
+ * `object-src 'none'`, `base-uri 'self'` and `frame-ancestors 'self'` close the
+ * dangerous defaults (plugins, <base> hijacking, clickjacking) without touching
+ * any of the above. `upgrade-insecure-requests` and HSTS are production-only so
+ * they never force https on http://localhost during development.
+ */
+const cspDirectives: Record<string, string[]> = {
+  defaultSrc: ["'self'"],
+  baseUri: ["'self'"],
+  objectSrc: ["'none'"],
+  frameAncestors: ["'self'"],
+  scriptSrc: [
+    "'self'",
+    "'unsafe-inline'",
+    "https://accounts.google.com",
+    "https://apis.google.com",
+    "https://www.googletagmanager.com",
+    "https://www.gstatic.com",
+    "https://www.instagram.com",
+    "https://www.tiktok.com",
+    "https://connect.facebook.net",
+  ],
+  scriptSrcAttr: ["'none'"],
+  styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+  fontSrc: ["'self'", "data:", "https://fonts.gstatic.com"],
+  imgSrc: ["'self'", "data:", "blob:", "https:"],
+  connectSrc: [
+    "'self'",
+    "https://accounts.google.com",
+    "https://www.googletagmanager.com",
+    "https://www.google-analytics.com",
+    "https://region1.google-analytics.com",
+    "https://api.cloudinary.com",
+  ],
+  frameSrc: [
+    "'self'",
+    "https://accounts.google.com",
+    "https://www.instagram.com",
+    "https://www.tiktok.com",
+    "https://www.facebook.com",
+  ],
+  workerSrc: ["'self'", "blob:"],
+  manifestSrc: ["'self'"],
+  mediaSrc: ["'self'", "https:", "data:"],
+};
+if (isProduction) cspDirectives.upgradeInsecureRequests = [];
+
+app.use(
+  helmet({
+    contentSecurityPolicy: { useDefaults: false, directives: cspDirectives },
+    // OAuth sign-in opens a Google popup that talks back via postMessage; the
+    // strict `same-origin` COOP would sever that channel. `allow-popups` keeps
+    // the isolation while letting the popup flow work.
+    crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
+    // Third-party embeds are not COEP-compatible, so leave COEP off.
+    crossOriginEmbedderPolicy: false,
+    referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+    // HSTS only in production: on localhost it would pin the browser to https.
+    hsts: isProduction ? { maxAge: 15552000, includeSubDomains: true } : false,
+  }),
+);
 
 declare module "http" {
   interface IncomingMessage {

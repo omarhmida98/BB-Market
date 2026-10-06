@@ -19,6 +19,8 @@ server/smoke_ui.db
 server/smoke_ui.db-journal
 server/smoke_ui.db-wal
 server/smoke_ui.db-shm
+# Throwaway uploads dir created by test-security-routes.ts.
+server/security_rt_uploads/
 
 # Database and upload backups written by `npm run db:reset-data`. They hold
 # password hashes and customer details, so they never belong in the repository.

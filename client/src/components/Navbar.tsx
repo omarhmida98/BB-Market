@@ -8,6 +8,7 @@ import { LanguageSwitcher } from "./LanguageSwitcher";
 import { CartSheet } from "./CartSheet";
 import { useAuth } from "@/hooks/use-auth";
 import { ThemeToggle } from "./ThemeToggle";
+import { NotificationDropdown } from "./NotificationDropdown";
 
 const ADMIN_EMAILS = ["bbmarket26@gmail.com", "omar.hmida.lgl@gmail.com"];
 
@@ -56,6 +57,9 @@ export function Navbar() {
                   <LayoutDashboard className="w-4 h-4" /> Admin
                 </Link>
               )}
+              {/* Renders nothing when signed out. Shown to customers and admins
+                  alike; the server decides which notifications each one gets. */}
+              <NotificationDropdown />
               {user ? (
                 <Link
                   href="/account"
@@ -78,6 +82,7 @@ export function Navbar() {
 
             <div className="flex md:hidden items-center gap-1">
               <CartCounter onOpenCart={() => setIsCartOpen(true)} compact label={t("nav.cart", "Panier")} />
+              <NotificationDropdown />
               <ThemeToggle />
               <button onClick={() => setIsOpen(!isOpen)} className="p-2 rounded-md text-muted-foreground hover:text-primary">
                 {isOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}

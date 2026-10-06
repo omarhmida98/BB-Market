@@ -210,6 +210,36 @@ export const pgWishlist = pgTable("wishlist", {
 ]);
 
 /**
+ * Notifications (migration 0008): one row per recipient.
+ *
+ * The row stores facts about an order event, not a sentence - see
+ * shared/notifications.ts for why. `user_id` is the recipient and the only
+ * thing every read is filtered by, which is what keeps one customer's history
+ * out of another's.
+ *
+ * There is deliberately no foreign key to `orders`: a notification is history,
+ * and it should still read "your order was delivered" if the order row is later
+ * removed. Account deletion clears a user's rows explicitly (see `deleteUser`).
+ */
+export const pgNotifications = pgTable("notifications", {
+  id: serial("id").primaryKey(),
+  userId: pgInteger("user_id").notNull(),
+  audience: pgText("audience").notNull(),
+  type: pgText("type").notNull(),
+  orderId: pgInteger("order_id"),
+  orderStatus: pgText("order_status"),
+  orderTotal: pgDoublePrecision("order_total"),
+  customerName: pgText("customer_name"),
+  read: boolean("read").notNull().default(false),
+  createdAt: pgTimestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  // Serves the list: `WHERE user_id = ? ORDER BY created_at DESC`.
+  index("idx_notifications_user_created").on(t.userId, t.createdAt),
+  // Serves the unread badge: `WHERE user_id = ? AND read = false`.
+  index("idx_notifications_user_read").on(t.userId, t.read),
+]);
+
+/**
  * Homepage shelves, one row per horizontal strip of products (migration 0006).
  *
  * This table holds configuration, not catalogue data: it says *which* slice of
@@ -273,6 +303,7 @@ export const pgSchema = {
   socialMediaEmbeds: pgSocialMediaEmbeds,
   wishlist: pgWishlist,
   homepageSections: pgHomepageSections,
+  notifications: pgNotifications,
 };
 
 // --- SQLite Schema ---
@@ -434,6 +465,26 @@ export const sqliteWishlist = sqliteTable("wishlist", {
 ]);
 
 /**
+ * SQLite twin of `pgNotifications` (migration 0008). See that definition for
+ * the design.
+ */
+export const sqliteNotifications = sqliteTable("notifications", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: integer("user_id").notNull(),
+  audience: sqliteText("audience").notNull(),
+  type: sqliteText("type").notNull(),
+  orderId: integer("order_id"),
+  orderStatus: sqliteText("order_status"),
+  orderTotal: real("order_total"),
+  customerName: sqliteText("customer_name"),
+  read: integer("read", { mode: "boolean" }).notNull().default(sql`0`),
+  createdAt: integer("created_at", { mode: 'timestamp' }).notNull().default(sql`(strftime('%s', 'now'))`),
+}, (t) => [
+  sqliteIndex("idx_notifications_user_created").on(t.userId, t.createdAt),
+  sqliteIndex("idx_notifications_user_read").on(t.userId, t.read),
+]);
+
+/**
  * SQLite twin of `pgHomepageSections` (migration 0006). See that definition for
  * the design; only the dialect-specific bits differ - booleans are integers with
  * `mode: "boolean"`, and timestamps are epoch seconds.
@@ -479,4 +530,5 @@ export const sqliteSchema = {
   socialMediaEmbeds: sqliteSocialMediaEmbeds,
   wishlist: sqliteWishlist,
   homepageSections: sqliteHomepageSections,
+  notifications: sqliteNotifications,
 };

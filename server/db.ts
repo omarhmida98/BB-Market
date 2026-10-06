@@ -42,6 +42,17 @@ let pgPool: pg.Pool | null = null;
  * unlink an open file) and available for a graceful shutdown. Safe to call more
  * than once.
  */
+/**
+ * The live PostgreSQL pool, or null when running on SQLite.
+ *
+ * Exposed so the session store (connect-pg-simple) can reuse the one connection
+ * pool the app already owns, rather than opening a second, separately-configured
+ * one. It inherits the pool's TLS policy and `timezone=UTC` option for free.
+ */
+export function getPgPool(): pg.Pool | null {
+  return pgPool;
+}
+
 export async function closeDatabase(): Promise<void> {
   if (pgPool) {
     const pool = pgPool;
@@ -141,4 +152,4 @@ if (target.dialect === "postgresql") {
   schema = sqliteSchema;
 }
 
-export const { products, messages, users, promos, stickerCatalogs, settings, userActivities, categories, orders, socialMediaEmbeds, wishlist, homepageSections } = schema;
+export const { products, messages, users, promos, stickerCatalogs, settings, userActivities, categories, orders, socialMediaEmbeds, wishlist, homepageSections, notifications } = schema;

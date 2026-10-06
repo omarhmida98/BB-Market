@@ -346,8 +346,13 @@ const client = new pg.Pool({ connectionString: URL_RE, ssl: useSsl, max: 4, opti
 
     // ------------------------------------------------------------------ schema
     console.log("\n[SCHEMA]");
+    // Expected count is derived from the PostgreSQL migration journal rather than
+    // hardcoded, so adding a migration (e.g. 0009_session) never makes this stale.
+    const pgJournal = JSON.parse(
+      fs.readFileSync(path.join(SERVER_ROOT, "migrations/pg/meta/_journal.json"), "utf8"),
+    );
     const migrations = await client.query("select count(*)::int as n from drizzle.__drizzle_migrations");
-    eq("all migrations recorded", migrations.rows[0].n, 6);
+    eq("all migrations recorded", migrations.rows[0].n, pgJournal.entries.length);
 
     const tables = await client.query(
       `select table_name from information_schema.tables
@@ -419,8 +424,10 @@ const client = new pg.Pool({ connectionString: URL_RE, ssl: useSsl, max: 4, opti
     if (!up) throw new Error(`server never came up:\n${serverLog}`);
     check(
       "child server loaded the rehearsal env file, not the workspace .env",
-      serverLog.includes(CHILD_ENV_FILE),
-      serverLog.includes(CHILD_ENV_FILE) ? "" : `child log said: ${serverLog.match(/\[env\].*/)?.[0]}`,
+      // env.ts logs the basename (`[env] loaded .env.pg_rehearsal`), not the
+      // absolute path, so match on the basename.
+      serverLog.includes(path.basename(CHILD_ENV_FILE)),
+      serverLog.includes(path.basename(CHILD_ENV_FILE)) ? "" : `child log said: ${serverLog.match(/\[env\].*/)?.[0]}`,
     );
 
     const health = await makeClient().call("GET", "/api/health");
@@ -522,18 +529,13 @@ const client = new pg.Pool({ connectionString: URL_RE, ssl: useSsl, max: 4, opti
     eq("anonymous message list is 401", (await anon.call("GET", "/api/messages")).status, 401);
     eq("client message list is 403", (await customer.call("GET", "/api/messages")).status, 403);
     eq("anonymous message delete is 401", (await anon.call("DELETE", "/api/messages/1")).status, 401);
-    // The /api/debug/* helpers read the same contact data as /api/messages, so an
-    // admin guard on the latter means nothing if these stay at isAuthenticated():
-    // a signed-in customer could dump the whole inbox and the stock levels.
-    eq("anonymous debug message dump is 401", (await anon.call("GET", "/api/debug/messages")).status, 401);
-    eq("client debug message dump is 403", (await customer.call("GET", "/api/debug/messages")).status, 403);
-    eq("anonymous debug stock dump is 401", (await anon.call("GET", "/api/debug/stock")).status, 401);
-    eq("client debug stock dump is 403", (await customer.call("GET", "/api/debug/stock")).status, 403);
-    eq("anonymous debug message detail is 401", (await anon.call("GET", "/api/debug/message/1")).status, 401);
-    eq("client debug message detail is 403", (await customer.call("GET", "/api/debug/message/1")).status, 403);
-    // The admin path must still work, or the guard is simply "deny everything".
-    eq("admin can read debug stock", (await admin.call("GET", "/api/debug/stock")).status, 200);
-    eq("admin can read debug messages", (await admin.call("GET", "/api/debug/messages")).status, 200);
+    // The /api/debug/* data routes (inbox dump, stock dump, message detail) were
+    // removed in the production-hardening pass. The strongest guarantee that the
+    // contact data they exposed is no longer reachable is that the routes do not
+    // exist at all — 404 for admin and everyone else.
+    eq("debug message dump route is gone (404)", (await admin.call("GET", "/api/debug/messages")).status, 404);
+    eq("debug stock dump route is gone (404)", (await admin.call("GET", "/api/debug/stock")).status, 404);
+    eq("debug message detail route is gone (404)", (await admin.call("GET", "/api/debug/message/1")).status, 404);
 
     const promoted = await anon.call("GET", `/api/products/${seedData.promoProductId}`);
     near("promotion price round-trips through the API", promoted.data?.promoPrice, seedData.promoPrice, 0.0001);

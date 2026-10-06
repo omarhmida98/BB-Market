@@ -60,6 +60,7 @@ const confirmed = process.argv.slice(2).includes("confirm");
  * log point at products and users by id, so they go before those too.
  */
 const CLEAR_TABLES = [
+  "notifications",
   "wishlist",
   "orders",
   "user_activities",

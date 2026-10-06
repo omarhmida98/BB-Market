@@ -4,9 +4,13 @@ import { OAuth2Client } from "google-auth-library";
 import { Express } from "express";
 import session from "express-session";
 import createMemoryStore from "memorystore";
+import connectPgSimple from "connect-pg-simple";
+import rateLimit from "express-rate-limit";
+import type { RequestHandler } from "express";
 import { scrypt, randomBytes, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import { storage } from "./storage.js";
+import { getPgPool } from "./db.js";
 import { User as SelectUser } from "shared/schema.js";
 import { sendWelcomeEmail } from "./email.js";
 import { resolvePublicRegistrationRole } from "./roles.js";
@@ -53,10 +57,12 @@ export function setupAuth(app: Express) {
     const googleClient = googleClientId ? new OAuth2Client(googleClientId) : null;
 
     function sanitizeUser(user: SelectUser) {
-        // Never send password hashes to the client
-        // (keep it minimal: only remove password, but add hasPassword flag)
+        // Never send the password hash OR the password-reset token to the client.
+        // A reset token is a bearer credential: anything that receives it can
+        // reset the account, so it must not travel in /api/user, /api/login or
+        // /api/register responses.
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        const { password, ...safe } = user as any;
+        const { password, resetToken, resetTokenExpires, ...safe } = user as any;
         // Indiquer si l'utilisateur a un mot de passe défini (utile pour les comptes Google)
         safe.hasPassword = !!password && password.length > 0;
         return safe;
@@ -92,13 +98,38 @@ export function setupAuth(app: Express) {
         app.set("trust proxy", false);
     }
 
+    // Session store.
+    //
+    // PostgreSQL (production) persists sessions in a `session` table through the
+    // app's existing pool, so a Node restart or redeploy does NOT log anyone out,
+    // and MemoryStore's slow memory leak is gone. The `session` table is created
+    // by migration 0009 (`npm run db:migrate`); `createTableIfMissing` is left off
+    // so this file performs no DDL, consistent with the rest of the schema.
+    //
+    // SQLite (local dev) keeps the in-process MemoryStore: there is no second
+    // process to share with and a dev restart losing sessions is harmless.
+    const pgPool = getPgPool();
+    let sessionStore: session.Store;
+    if (pgPool) {
+        const PgStore = connectPgSimple(session);
+        sessionStore = new PgStore({
+            pool: pgPool,
+            tableName: "session",
+            createTableIfMissing: false,
+            // Sweep expired rows hourly so the table does not grow without bound.
+            pruneSessionInterval: 60 * 60,
+        });
+        console.log("[AUTH] Session store: PostgreSQL (persistent)");
+    } else {
+        sessionStore = new MemoryStore({ checkPeriod: 86400000 });
+        console.log("[AUTH] Session store: in-memory (development)");
+    }
+
     const sessionSettings: session.SessionOptions = {
         secret: sessionSecret,
         resave: false,
         saveUninitialized: false,
-        store: new MemoryStore({
-            checkPeriod: 86400000,
-        }),
+        store: sessionStore,
         cookie: {
             // Stays `true` in production so the cookie is only ever sent over HTTPS.
             // Behind Nginx this works because of the `trust proxy` setting above.
@@ -212,7 +243,24 @@ export function setupAuth(app: Express) {
         }
     });
 
-    app.post("/api/login", (req, res, next) => {
+    // Brute-force throttle on login, keyed by IP. `skipSuccessfulRequests` means
+    // only FAILED attempts count, so a legitimate customer who signs in normally
+    // is never limited — only repeated wrong-password attempts accumulate.
+    // Env-overridable; DISABLE_RATE_LIMIT=1 turns it off (tests only).
+    const loginWindowMs = Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000);
+    const loginMax = Number(process.env.AUTH_RATE_LIMIT_MAX ?? 10);
+    const loginLimiter: RequestHandler = process.env.DISABLE_RATE_LIMIT === "1"
+        ? ((_req, _res, next) => next())
+        : rateLimit({
+            windowMs: loginWindowMs,
+            limit: loginMax,
+            skipSuccessfulRequests: true,
+            standardHeaders: true,
+            legacyHeaders: false,
+            message: "Trop de tentatives de connexion. Veuillez réessayer plus tard.",
+        });
+
+    app.post("/api/login", loginLimiter, (req, res, next) => {
         dbg(`[AUTH] POST /api/login for: ${req.body.username}`);
         passport.authenticate("local", (err: any, user: SelectUser | false) => {
             if (err) {

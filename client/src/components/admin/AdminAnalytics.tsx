@@ -294,7 +294,7 @@ export default function AdminAnalytics() {
           </div>
 
           {/* Charts ----------------------------------------------------- */}
-          <div className="grid xl:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
             <ChartPanel
               title={t("analytics.revenue_by_day")}
               note={t("analytics.revenue_note")}
@@ -324,7 +324,7 @@ export default function AdminAnalytics() {
           </div>
 
           {/* Top sellers ------------------------------------------------ */}
-          <div className="grid xl:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
             <Panel title={t("analytics.top_products")} note={t("analytics.top_products_note")}>
               {data.topProducts.length === 0 ? (
                 <Empty text={t("analytics.empty_range")} />
@@ -393,7 +393,7 @@ export default function AdminAnalytics() {
           </div>
 
           {/* Recent activity -------------------------------------------- */}
-          <div className="grid xl:grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
             <Panel title={t("analytics.recent_orders")} note={t("analytics.revenue_note")}>
               {data.recentOrders.length === 0 ? (
                 <Empty text={t("analytics.no_recent_orders")} />

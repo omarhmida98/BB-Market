@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { OrderStatusBadge } from "@/components/OrderStatusTimeline";
 import { WishlistSection } from "@/components/WishlistSection";
+import { NotificationsSection } from "@/components/NotificationsSection";
 import { Button } from "@/components/ui/button";
 import { formatDate as formatDateUtil, formatMoney as formatMoneyUtil } from "@/lib/format";
 
@@ -333,6 +334,11 @@ export default function Account() {
             </ul>
           )}
         </motion.section>
+
+        {/* ---------------------------------------------------- notifications
+            Below the orders: each entry is an event in the life of one of the
+            orders listed just above, and links back to that order's page. */}
+        <NotificationsSection />
       </div>
 
       <Footer />

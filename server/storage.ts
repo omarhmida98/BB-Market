@@ -1,12 +1,32 @@
 import type { Product, InsertProduct, InsertMessage, Message, Promo, InsertPromo, User, InsertUser, Settings, InsertSettings, StickerCatalog, InsertStickerCatalog, UserActivity, Category, InsertCategory, Order, InsertOrder, SocialMediaEmbed, SocialPlatform, DeliverySettings, ProductQuery, ProductListResponse, HomepageSection, HomepageSectionInput, HomepageSectionPatch, HomepageSectionType, HomepageShelf } from "shared/schema.js";
 import { PRODUCT_LOW_STOCK_THRESHOLD, HOMEPAGE_SECTION_DEFAULT_PRODUCTS, HOMEPAGE_SECTION_MAX_PRODUCTS, HOMEPAGE_SECTION_MIN_PRODUCTS, productQuerySchema } from "shared/schema.js";
-import { db, products, messages, promos, users, settings, stickerCatalogs, userActivities, categories, orders, socialMediaEmbeds, wishlist, homepageSections } from "./db.js";
+import { db, products, messages, promos, users, settings, stickerCatalogs, userActivities, categories, orders, socialMediaEmbeds, wishlist, homepageSections, notifications } from "./db.js";
+import { type AppNotification, type NotificationAudience, type NotificationListResponse, type NotificationType } from "shared/notifications.js";
+import { formatOrderNumber } from "shared/orders.js";
 import { toWishlistItem, type WishlistItem, type WishlistListResponse } from "shared/wishlist.js";
 import { normaliseStoredRole } from "./roles.js";
 import { eq, desc, asc, and, sql, count, inArray, notInArray, type SQL } from "drizzle-orm";
 import { resolveDbTarget } from "./db-target.js";
 import { getBestSellingProductIds } from "./analytics.js";
 import { dbg } from "./debug.js";
+
+/** Narrowing and paging for `listNotifications`. All optional. */
+export type NotificationListOptions = {
+  offset?: number;
+  unreadOnly?: boolean;
+  type?: NotificationType;
+};
+
+/** A notification to write. `read` and `createdAt` take the column defaults. */
+export type NewNotification = {
+  userId: number;
+  audience: NotificationAudience;
+  type: NotificationType;
+  orderId?: number | null;
+  orderStatus?: string | null;
+  orderTotal?: number | null;
+  customerName?: string | null;
+};
 
 export interface IStorage {
   queryProducts(query: ProductQuery): Promise<ProductListResponse>;
@@ -74,6 +94,12 @@ export interface IStorage {
   getOrderByIdForUser(id: number, userId: number): Promise<Order | undefined>;
   createOrder(order: Omit<Order, "id" | "createdAt">): Promise<Order>;
   updateOrderStatus(id: number, status: string): Promise<Order | undefined>;
+  getOrderById(id: number): Promise<Order | undefined>;
+  getAdminUserIds(): Promise<number[]>;
+  createNotifications(rows: NewNotification[]): Promise<void>;
+  listNotifications(userId: number, audiences: NotificationAudience[], limit: number, options?: NotificationListOptions): Promise<NotificationListResponse>;
+  markNotificationRead(id: number, userId: number, audiences: NotificationAudience[]): Promise<boolean>;
+  markAllNotificationsRead(userId: number, audiences: NotificationAudience[]): Promise<number>;
   /**
    * Every favourite of one customer, newest first, each joined to its product.
    *
@@ -517,6 +543,9 @@ export class DatabaseStorage implements IStorage {
     const result = await db.delete(users).where(eq(users.id, id)).returning();
     if (result.length === 0) return false;
     await db.delete(wishlist).where(eq(wishlist.userId, id));
+    // Same reasoning as the favourites: a deleted account must not leave its
+    // notification history behind for a future user to inherit by id.
+    await db.delete(notifications).where(eq(notifications.userId, id));
     return true;
   }
 
@@ -627,6 +656,124 @@ async updateUserRole(id: number, role: string): Promise<void> {
       deliveryFee: String(order.deliveryFee),
     }).returning();
     return this.toOrder(created);
+  }
+
+  /**
+   * Any order by id, with no ownership filter. Admin-side callers only: a
+   * customer-facing route must use `getOrderByIdForUser`.
+   */
+  async getOrderById(id: number): Promise<Order | undefined> {
+    const [row] = await db.select().from(orders).where(eq(orders.id, id)).limit(1);
+    return row ? this.toOrder(row) : undefined;
+  }
+
+  /** Ids of every account that currently holds an admin role. */
+  async getAdminUserIds(): Promise<number[]> {
+    const rows = (await db.select({ id: users.id, role: users.role }).from(users)) as { id: number; role: string | null }[];
+    return rows
+      .filter((row) => ["admin", "superadmin"].includes(normaliseStoredRole(row.role)))
+      .map((row) => Number(row.id));
+  }
+
+  async createNotifications(rows: NewNotification[]): Promise<void> {
+    if (rows.length === 0) return;
+    await db.insert(notifications).values(
+      rows.map((row) => ({
+        userId: row.userId,
+        audience: row.audience,
+        type: row.type,
+        orderId: row.orderId ?? null,
+        orderStatus: row.orderStatus ?? null,
+        orderTotal: row.orderTotal ?? null,
+        customerName: row.customerName ?? null,
+      })),
+    );
+  }
+
+  private toNotification(row: any): AppNotification {
+    const orderId = row.orderId === null || row.orderId === undefined ? null : Number(row.orderId);
+    return {
+      id: Number(row.id),
+      audience: row.audience as NotificationAudience,
+      type: row.type as NotificationType,
+      orderId,
+      orderNumber: orderId === null ? null : formatOrderNumber(orderId),
+      orderStatus: row.orderStatus ?? null,
+      orderTotal: row.orderTotal === null || row.orderTotal === undefined ? null : Number(row.orderTotal),
+      customerName: row.customerName ?? null,
+      read: row.read === true || row.read === 1,
+      createdAt: row.createdAt ? new Date(row.createdAt).toISOString() : null,
+    };
+  }
+
+  /**
+   * The owner filter every notification query goes through.
+   *
+   * `user_id = ?` is the security boundary: there is no query in this file that
+   * reads or updates a notification without it. `audiences` narrows further by
+   * role (the route decides which a caller may see), and an empty list matches
+   * nothing rather than everything.
+   */
+  private notificationScope(userId: number, audiences: NotificationAudience[]): SQL {
+    if (audiences.length === 0) return sql`1 = 0`;
+    return and(eq(notifications.userId, userId), inArray(notifications.audience, audiences)) as SQL;
+  }
+
+  /**
+   * `total` counts the rows the filters match; `unreadCount` deliberately
+   * ignores the filters and counts every unread row in scope, because it feeds
+   * a badge that must not change when the reader switches filter or page.
+   */
+  async listNotifications(
+    userId: number,
+    audiences: NotificationAudience[],
+    limit: number,
+    options: NotificationListOptions = {},
+  ): Promise<NotificationListResponse> {
+    const scope = this.notificationScope(userId, audiences);
+    // The owner scope is always the first condition; filters only narrow it.
+    const filtered = and(
+      scope,
+      options.unreadOnly ? eq(notifications.read, false) : undefined,
+      options.type ? eq(notifications.type, options.type) : undefined,
+    ) as SQL;
+    const [rows, [totals], [unread]] = await Promise.all([
+      // `id` breaks ties: several rows written in the same second (SQLite
+      // timestamps are whole seconds) still come back newest first.
+      db
+        .select()
+        .from(notifications)
+        .where(filtered)
+        .orderBy(desc(notifications.createdAt), desc(notifications.id))
+        .limit(limit)
+        .offset(Math.max(0, options.offset ?? 0)),
+      db.select({ value: count() }).from(notifications).where(filtered),
+      db.select({ value: count() }).from(notifications).where(and(scope, eq(notifications.read, false))),
+    ]);
+    return {
+      items: rows.map((row: any) => this.toNotification(row)),
+      total: Number(totals?.value ?? 0),
+      unreadCount: Number(unread?.value ?? 0),
+    };
+  }
+
+  /** False when the row does not exist OR is not the caller's - the two are indistinguishable on purpose. */
+  async markNotificationRead(id: number, userId: number, audiences: NotificationAudience[]): Promise<boolean> {
+    const result = await db
+      .update(notifications)
+      .set({ read: true })
+      .where(and(eq(notifications.id, id), this.notificationScope(userId, audiences)))
+      .returning({ id: notifications.id });
+    return result.length > 0;
+  }
+
+  async markAllNotificationsRead(userId: number, audiences: NotificationAudience[]): Promise<number> {
+    const result = await db
+      .update(notifications)
+      .set({ read: true })
+      .where(and(this.notificationScope(userId, audiences), eq(notifications.read, false)))
+      .returning({ id: notifications.id });
+    return result.length;
   }
 
   async updateOrderStatus(id: number, status: string): Promise<Order | undefined> {

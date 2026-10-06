@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { BarChart3, Boxes, ClipboardList, FolderPlus, LayoutGrid, LogOut, PackagePlus, ShoppingBag, Trash2, Share2, Eye, Save, Loader2, MapPin, Mail, Phone, StickyNote, CreditCard, Hash, Clock, Truck, ArrowDown, ArrowUp, Pencil, RotateCcw, ImagePlus } from "lucide-react";
+import { BarChart3, Boxes, ClipboardList, FolderPlus, LayoutGrid, LogOut, PackagePlus, ShoppingBag, Trash2, Share2, Eye, Save, Loader2, MapPin, Mail, Phone, StickyNote, CreditCard, Hash, Clock, Truck, ArrowDown, ArrowUp, Pencil, RotateCcw, ImagePlus, Bell } from "lucide-react";
 import { FaWhatsapp } from "react-icons/fa";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -21,10 +21,13 @@ import {
 import { resolvePromotion, validatePromotion } from "@shared/promotions";
 import { normalizeHomepageLocale, sectionTitle } from "@shared/homepage";
 import { formatDate, formatMoney } from "@/lib/format";
+import { ADMIN_OPEN_ORDER_EVENT } from "@/lib/notifications";
+import { NotificationDropdown } from "@/components/NotificationDropdown";
 import i18n from "@/lib/i18n";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import AdminAnalytics from "@/components/admin/AdminAnalytics";
+import AdminNotifications from "@/components/admin/AdminNotifications";
 import logo from "@assets/bb_market_logo.png";
 
 type Category = { id: number; name: string; slug: string; active: boolean };
@@ -177,7 +180,23 @@ export default function AdminMarket() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const { t } = useTranslation();
-  const [tab, setTab] = useState<"overview" | "products" | "categories" | "homepage" | "orders" | "delivery" | "social">("overview");
+  const [tab, setTab] = useState<"overview" | "products" | "categories" | "homepage" | "orders" | "notifications" | "delivery" | "social">("overview");
+  // An order to open as soon as the Orders tab can show it. Set from a
+  // notification: `?order=<id>` when arriving from another page, the DOM event
+  // when this page is already open (a URL change alone does not remount it).
+  const [focusOrderId, setFocusOrderId] = useState<number | null>(null);
+  useEffect(() => {
+    const open = (value: unknown) => {
+      const id = Number(value);
+      if (!Number.isInteger(id) || id <= 0) return;
+      setFocusOrderId(id);
+      setTab("orders");
+    };
+    open(new URLSearchParams(window.location.search).get("order"));
+    const onOpenOrder = (event: Event) => open((event as CustomEvent).detail?.orderId);
+    window.addEventListener(ADMIN_OPEN_ORDER_EVENT, onOpenOrder);
+    return () => window.removeEventListener(ADMIN_OPEN_ORDER_EVENT, onOpenOrder);
+  }, []);
   const [categoryName, setCategoryName] = useState("");
   const [productForm, setProductForm] = useState({ name: "", description: "", category: "", quantity: "0", price: "0" });
   const [promotionForm, setPromotionForm] = useState<PromotionFormValues>(EMPTY_PROMOTION_FORM);
@@ -326,7 +345,10 @@ export default function AdminMarket() {
 
   const updateOrderStatus = useMutation({
     mutationFn: ({ id, status }: { id: number; status: string }) => jsonFetch<Order>(`/api/orders/${id}/status`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }) }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/orders"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/orders"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/notifications"] });
+    },
   });
 
   const deliverySettings = useQuery({
@@ -360,13 +382,14 @@ export default function AdminMarket() {
     ["categories", t("admin.nav_categories"), FolderPlus],
     ["homepage", t("admin.nav_homepage"), LayoutGrid],
     ["orders", t("admin.nav_orders"), ClipboardList],
+    ["notifications", t("admin.nav_notifications"), Bell],
     ["delivery", t("admin.nav_delivery"), Truck],
     ["social", t("admin.nav_social"), Share2],
   ] as const;
 
   return (
     <div className="min-h-screen bg-[#f6f8f7] dark:bg-slate-950 text-foreground">
-      <div className="grid lg:grid-cols-[250px_1fr] min-h-screen">
+      <div className="grid grid-cols-1 lg:grid-cols-[250px_1fr] min-h-screen">
         <aside className="bg-[#063f2e] text-white p-5 lg:sticky lg:top-0 lg:h-screen">
           <button onClick={() => setLocation("/")} className="bg-white rounded-2xl p-2 mb-8"><img src={logo} alt="B&B Market" className="h-14 w-auto" /></button>
           <div className="space-y-2">
@@ -380,8 +403,13 @@ export default function AdminMarket() {
           <button onClick={() => logoutMutation.mutate(undefined, { onSuccess: () => setLocation("/") })} className="mt-4 flex items-center gap-2 text-sm font-bold hover:text-orange-300"><LogOut className="w-4 h-4" /> {t("admin.logout")}</button>
         </aside>
 
-        <main className="p-4 md:p-8 xl:p-10 max-w-[1500px] w-full mx-auto">
-          <div className="mb-8"><div className="text-sm font-bold text-[#ff6200] uppercase tracking-widest">{t("admin.title")}</div><h1 className="text-3xl md:text-4xl font-black">{t("admin.brand")}</h1></div>
+        <main className="p-4 md:p-8 xl:p-10 max-w-[1500px] w-full min-w-0 mx-auto">
+          <div className="mb-8 flex items-start justify-between gap-4">
+            <div><div className="text-sm font-bold text-[#ff6200] uppercase tracking-widest">{t("admin.title")}</div><h1 className="text-3xl md:text-4xl font-black">{t("admin.brand")}</h1></div>
+            {/* The dashboard has its own layout without the site navbar, so the
+                bell is repeated here: this is where an admin waits for orders. */}
+            <NotificationDropdown />
+          </div>
 
           {tab === "overview" && (
             <div className="space-y-8">
@@ -448,12 +476,20 @@ export default function AdminMarket() {
 
           {tab === "homepage" && <HomepageSectionsPanel />}
 
-          {tab === "orders" && <Panel title={t("admin.orders_all")}><OrdersTable orders={orders.data || []} onStatus={(id, status) => updateOrderStatus.mutate({ id, status })} /></Panel>}
+          {tab === "orders" && <Panel title={t("admin.orders_all")}><OrdersTable orders={orders.data || []} onStatus={(id, status) => updateOrderStatus.mutate({ id, status })} focusOrderId={focusOrderId} onFocusHandled={() => setFocusOrderId(null)} /></Panel>}
 
           {tab === "delivery" && (
       deliverySettings.data
         ? <DeliverySettingsPanel settings={deliverySettings.data} onSave={(next) => saveDeliverySettings.mutate(next)} saving={saveDeliverySettings.isPending} />
         : <div className="py-10 text-center text-muted-foreground"><Loader2 className="w-6 h-6 mx-auto animate-spin" /></div>
+    )}
+
+    {tab === "notifications" && (
+      <Panel title={t("admin.nav_notifications")} icon={<Bell className="w-5 h-5" />}>
+        {/* Same path as a click in the bell: remember the order, switch to
+            the Orders tab, and the table opens it once it is loaded. */}
+        <AdminNotifications onOpenOrder={(orderId) => { setFocusOrderId(orderId); setTab("orders"); }} />
+      </Panel>
     )}
 
     {tab === "social" && (
@@ -1844,9 +1880,18 @@ function DeliverySettingsPanel({ settings, onSave, saving }: { settings: Deliver
   </div>;
 }
 
-function OrdersTable({ orders, onStatus }: { orders: Order[]; onStatus: (id: number, status: string) => void }) {
+function OrdersTable({ orders, onStatus, focusOrderId, onFocusHandled }: { orders: Order[]; onStatus: (id: number, status: string) => void; focusOrderId?: number | null; onFocusHandled?: () => void }) {
   const { t } = useTranslation();
   const [selected, setSelected] = useState<Order | null>(null);
+  // Open the order a notification pointed at, once the list has it. Cleared
+  // afterwards so closing the dialog does not reopen it on the next refetch.
+  useEffect(() => {
+    if (!focusOrderId) return;
+    const match = orders.find((order) => order.id === focusOrderId);
+    if (!match) return;
+    setSelected(match);
+    onFocusHandled?.();
+  }, [focusOrderId, orders]);
   if (!orders.length) return <div className="py-10 text-center text-muted-foreground"><Boxes className="w-10 h-10 mx-auto mb-3 opacity-40" />{t("admin.orders_empty")}</div>;
   return <>
     <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="text-start border-b"><th className="py-3 pe-4">#</th><th className="py-3 pe-4">{t("admin.orders_customer")}</th><th className="py-3 pe-4">{t("admin.orders_items")}</th><th className="py-3 pe-4">{t("admin.orders_fulfilment")}</th><th className="py-3 pe-4">{t("admin.orders_delivery")}</th><th className="py-3 pe-4">{t("admin.orders_total")}</th><th className="py-3 pe-4">{t("admin.orders_payment")}</th><th className="py-3 pe-4">{t("admin.orders_status")}</th><th className="py-3">{t("admin.orders_details")}</th></tr></thead><tbody>{orders.map(order => {

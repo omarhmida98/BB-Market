@@ -12,6 +12,7 @@ import { insertCategorySchema, insertOrderSchema, upsertSocialMediaEmbedSchema, 
 import { resolvePromotion } from "shared/promotions.js";
 import { dbg } from "./debug.js";
 import { toCustomerOrder, toCustomerOrderSummary } from "shared/orders.js";
+import { ADMIN_NOTIFICATION_FILTERS, ADMIN_NOTIFICATION_PAGE_SIZE, NOTIFICATION_PAGE_DEFAULT, NOTIFICATION_PAGE_MAX, type AdminNotificationFilter, type NotificationAudience } from "shared/notifications.js";
 import { analyticsQuerySchema } from "shared/analytics.js";
 import { getAnalyticsDashboard } from "./analytics.js";
 import multer from "multer";
@@ -23,6 +24,28 @@ import { uploadImage } from "./cloudinary_util.js";
 import { performBackup } from "./backup.js";
 import { resolveDbTarget } from "./db-target.js";
 import { resolveAssetsDir, resolveUploadsDir } from "./paths.js";
+import rateLimit from "express-rate-limit";
+
+/**
+ * Throttle the password-reset endpoints (forgot / verify / reset).
+ *
+ * Keyed by IP, shared across the three routes, so a burst of reset attempts or
+ * token guesses from one source is capped. The limit is generous for a real
+ * person doing one reset (a few requests) but stops automated enumeration of
+ * emails and reset tokens. Env-overridable so a deploy can tune it; set
+ * DISABLE_RATE_LIMIT=1 to turn it off (tests only).
+ */
+const PASSWORD_RESET_RATE_WINDOW_MS = Number(process.env.PASSWORD_RESET_RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000);
+const PASSWORD_RESET_RATE_MAX = Number(process.env.PASSWORD_RESET_RATE_LIMIT_MAX ?? 20);
+const passwordResetLimiter = process.env.DISABLE_RATE_LIMIT === "1"
+  ? ((_req, _res, next) => next()) as RequestHandler
+  : rateLimit({
+      windowMs: PASSWORD_RESET_RATE_WINDOW_MS,
+      limit: PASSWORD_RESET_RATE_MAX,
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: { message: "Trop de requêtes. Veuillez réessayer plus tard." },
+    });
 
 /**
  * Write an uploaded file to the local uploads directory and return its public
@@ -481,6 +504,39 @@ app.delete("/api/categories/:id", async (req, res) => {
       if (user?.id) {
         await storage.createUserActivity(user.id, "order_create", `Commande #${order.id} créée (${order.total.toFixed(3)} DT)`);
       }
+
+      // Tell every admin there is a new order, and tell the customer it was
+      // received. A guest order has no account, so only the admins hear of it.
+      // Wrapped on its own: the order is already saved and paid attention to by
+      // the response below, and a failed notification must not turn a successful
+      // checkout into an error the customer retries.
+      try {
+        const adminIds = await storage.getAdminUserIds();
+        await storage.createNotifications([
+          ...adminIds.map((adminId) => ({
+            userId: adminId,
+            audience: "admin" as const,
+            type: "order_new" as const,
+            orderId: order.id,
+            orderStatus: order.status,
+            orderTotal: order.total,
+            customerName: order.customerName,
+          })),
+          ...(user?.id
+            ? [{
+                userId: user.id as number,
+                audience: "customer" as const,
+                type: "order_received" as const,
+                orderId: order.id,
+                orderStatus: order.status,
+                orderTotal: order.total,
+              }]
+            : []),
+        ]);
+      } catch (notifyError) {
+        console.error("[NOTIFICATIONS] order-created notification failed:", notifyError);
+      }
+
       res.status(201).json(order);
     } catch (error: any) {
       console.error("[ORDERS] create failed:", error);
@@ -552,9 +608,29 @@ app.delete("/api/categories/:id", async (req, res) => {
     }
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Invalid order ID" });
+    // Read first so a re-save of the same status is not announced as a change.
+    const previous = await storage.getOrderById(id);
     const order = await storage.updateOrderStatus(id, status);
     if (!order) return res.sendStatus(404);
     await storage.createUserActivity(currentUser.id, "order_status", `Commande #${order.id}: ${order.status}`);
+
+    // The customer's history entry. Only for orders tied to an account, and
+    // only when the status really moved. Same isolation as on creation: the
+    // status is already saved, so a notification failure is logged, not returned.
+    if (order.userId && previous?.status !== order.status) {
+      try {
+        await storage.createNotifications([{
+          userId: order.userId,
+          audience: "customer",
+          type: "order_status",
+          orderId: order.id,
+          orderStatus: order.status,
+          orderTotal: order.total,
+        }]);
+      } catch (notifyError) {
+        console.error("[NOTIFICATIONS] order-status notification failed:", notifyError);
+      }
+    }
     res.json(order);
   });
 
@@ -636,7 +712,7 @@ app.delete("/api/categories/:id", async (req, res) => {
   });
 
   // Password Reset Routes
-  app.post("/api/forgot-password", async (req, res) => {
+  app.post("/api/forgot-password", passwordResetLimiter, async (req, res) => {
     try {
       const email = String(req.body?.email || "").trim().toLowerCase();
       if (!email) return res.status(400).send("Email requis");
@@ -664,65 +740,48 @@ app.delete("/api/categories/:id", async (req, res) => {
     }
   });
 
-  app.post("/api/verify-code", async (req, res) => {
+  // `/api/verify-code` (the old code-based reset flow) was removed in the
+  // production-hardening pass: the client never called it, and its 8-character
+  // prefix match was a weaker credential check than the link-based reset. The
+  // live reset flow is the email link -> /api/reset-password (full exact token).
+
+  app.post("/api/reset-password", passwordResetLimiter, async (req, res) => {
     try {
-      const { email, code } = req.body;
-      if (!email || !code) {
-        return res.status(400).send("Email et code requis");
-      }
+      // The token is the ONLY proof of identity here. There is deliberately no
+      // email-only path and no prefix match: either would let anyone who knows
+      // an address reset the password of any account with a pending token.
+      //
+      // `token` is the full value from the reset link (/reset-password?token=...);
+      // `code` is accepted under the same rules for the older code field, but it
+      // must still be the full token, matched exactly. The password is never
+      // changed without a full, exact, unexpired token match.
+      const { token, code, newPassword, password } = req.body ?? {};
+      const incomingToken = typeof token === "string" ? token : typeof code === "string" ? code : null;
+      const finalPassword = typeof newPassword === "string" ? newPassword : typeof password === "string" ? password : null;
 
-      const user = await storage.getUserByEmail(email);
-      if (!user) {
-        return res.status(400).send("Utilisateur non trouvé");
-      }
-
-      const normalizedCode = String(code).toLowerCase().replace(/\s/g, '');
-      const storedToken = (user.resetToken || "").toLowerCase().replace(/\s/g, '');
-      const isValid = !!storedToken && (normalizedCode === storedToken || normalizedCode === storedToken.slice(0, 8));
-
-      if (!storedToken || !isValid) {
-        return res.status(400).send("Code de confirmation incorrect.");
-      }
-
-      if (user.resetTokenExpires && new Date() > user.resetTokenExpires) {
-        return res.status(400).send("Le code a expiré.");
-      }
-
-      res.status(200).send("Code valide.");
-    } catch (error) {
-      console.error("[ERROR] Dans /api/verify-code:", error);
-      res.status(500).send("Une erreur est survenue.");
-    }
-  });
-
-  app.post("/api/reset-password", async (req, res) => {
-    try {
-      const { email, code, token, newPassword, password } = req.body;
-      const incomingToken = token || code || null;
-      const finalPassword = newPassword || password || null;
-
-      if ((!email && !incomingToken) || !finalPassword) {
-        return res.status(400).send("Token/email et nouveau mot de passe sont requis.");
+      if (!incomingToken || !finalPassword) {
+        return res.status(400).send("Token et nouveau mot de passe sont requis.");
       }
 
       if (finalPassword.length < 6) {
         return res.status(400).send("Le nouveau mot de passe doit faire au moins 6 caractères.");
       }
 
-      let user: any = null;
-
-      if (email) {
-        user = await storage.getUserByEmail(email);
-      }
-
-      if (!user && incomingToken) {
-        const allUsers = await storage.getUsers();
-        user = allUsers.find((candidate) => !!candidate.resetToken && candidate.resetToken.toLowerCase() === String(incomingToken).toLowerCase())
-          || allUsers.find((candidate) => !!candidate.resetToken && candidate.resetToken.toLowerCase().startsWith(String(incomingToken).toLowerCase()));
-      }
+      // Exact, full-length, case-insensitive match against the stored token.
+      // Compared with `crypto.timingSafeEqual` so a near-miss cannot be found by
+      // measuring the response time. The candidate set is scanned rather than
+      // indexed because tokens are rare and short-lived.
+      const submitted = Buffer.from(incomingToken.toLowerCase());
+      const allUsers = await storage.getUsers();
+      const user = allUsers.find((candidate) => {
+        const stored = candidate.resetToken;
+        if (!stored) return false;
+        const storedBuf = Buffer.from(stored.toLowerCase());
+        return storedBuf.length === submitted.length && crypto.timingSafeEqual(storedBuf, submitted);
+      });
 
       if (!user || !user.resetToken) {
-        return res.status(400).send("Lien ou code invalide ou expiré.");
+        return res.status(400).send("Lien invalide ou expiré.");
       }
 
       if (user.resetTokenExpires && new Date() > user.resetTokenExpires) {
@@ -872,7 +931,11 @@ app.delete("/api/categories/:id", async (req, res) => {
   //  ROUTE CORRIGÉE: Update message status avec déduction du stock
   // ============================================
   app.patch("/api/messages/:id/status", async (req, res) => {
+    // Admin-only: approving a message deducts stock and acts on another
+    // customer's enquiry. Without the role check any logged-in customer could
+    // approve/reject orders.
     if (!req.isAuthenticated()) return res.sendStatus(401);
+    if (!["admin", "superadmin"].includes((req.user as any).role)) return res.sendStatus(403);
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ message: "ID invalide" });
 
@@ -907,14 +970,11 @@ app.delete("/api/categories/:id", async (req, res) => {
                 selectedItems = JSON.parse(rawData);
                 dbg(`📦 [STOCK] Parse JSON réussi`);
               } catch (e) {
-                dbg(`📦 [STOCK] Erreur de parse JSON, tentative avec évaluation`);
-                // Si c'est une chaîne qui ressemble à un tableau mais mal formaté
-                try {
-                  selectedItems = eval(`(${rawData})`);
-                } catch (e2) {
-                  console.error(`[STOCK] Impossible de parser les articles de la commande`);
-                  selectedItems = null;
-                }
+                // Malformed JSON fails safely to "no items". This value is
+                // customer-supplied (POST /api/messages selectedItems), so it is
+                // NEVER eval()'d — doing so was a remote-code-execution hole.
+                console.error(`[STOCK] selectedItems is not valid JSON; treating as no items`);
+                selectedItems = null;
               }
             } else {
               selectedItems = rawData;
@@ -1141,7 +1201,9 @@ app.delete("/api/categories/:id", async (req, res) => {
     }
   });
 
-  app.patch("/api/settings/stickers-image", upload.single('stickersImage'), async (req, res) => {
+  // `requireAdminForUpload` runs before multer so a non-admin is rejected before
+  // the file is buffered into memory.
+  app.patch("/api/settings/stickers-image", requireAdminForUpload, upload.single('stickersImage'), async (req, res) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
     try {
       if (!req.file) {
@@ -1430,6 +1492,7 @@ app.delete("/api/categories/:id", async (req, res) => {
 
   app.delete("/api/promos/:id", async (req, res) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
+    if (!["admin", "superadmin"].includes((req.user as any).role)) return res.sendStatus(403);
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
 
@@ -1443,6 +1506,7 @@ app.delete("/api/categories/:id", async (req, res) => {
 
   app.patch("/api/promos/:id", async (req, res) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
+    if (!["admin", "superadmin"].includes((req.user as any).role)) return res.sendStatus(403);
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
 
@@ -1491,7 +1555,10 @@ app.delete("/api/categories/:id", async (req, res) => {
   });
 
   app.patch("/api/settings", async (req, res) => {
+    // Admin-only: this writes shop-wide settings (delivery fee, social reels,
+    // stickers image). A customer must not be able to change them.
     if (!req.isAuthenticated()) return res.sendStatus(401);
+    if (!["admin", "superadmin"].includes((req.user as any).role)) return res.sendStatus(403);
     try {
       const settings = await storage.updateSettings(req.body);
       res.json(settings);
@@ -1558,7 +1625,7 @@ app.delete("/api/categories/:id", async (req, res) => {
     }
   });
 
-  app.post("/api/stickers", upload.single('image'), async (req, res) => {
+  app.post("/api/stickers", requireAdminForUpload, upload.single('image'), async (req, res) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
 try {
       if (!req.file) {
@@ -1601,6 +1668,7 @@ try {
 
   app.delete("/api/stickers/:id", async (req, res) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
+    if (!["admin", "superadmin"].includes((req.user as any).role)) return res.sendStatus(403);
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
 
@@ -1614,6 +1682,7 @@ try {
 
   app.patch("/api/stickers/:id", async (req, res) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
+    if (!["admin", "superadmin"].includes((req.user as any).role)) return res.sendStatus(403);
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
 
@@ -1689,7 +1758,9 @@ app.post("/api/user/change-password", async (req, res) => {
     if (user.role !== "superadmin") return res.status(403).send("Accessible aux Super Admins uniquement");
 
     const userList = await storage.getUsers();
-    const sanitizedUsers = userList.map(({ password, ...u }) => u);
+    // Strip the password hash and the reset token (a bearer credential) from
+    // every row before it leaves the server.
+    const sanitizedUsers = userList.map(({ password, resetToken, resetTokenExpires, ...u }) => u);
     res.json(sanitizedUsers);
   });
 
@@ -1699,7 +1770,7 @@ app.post("/api/user/change-password", async (req, res) => {
     if (currentUser.role !== "superadmin") return res.status(403).send("Accessible aux Super Admins uniquement");
 
     const [activities, userList] = await Promise.all([storage.getUserActivities(), storage.getUsers()]);
-    const usersById = new Map(userList.map(({ password, ...safeUser }) => [safeUser.id, safeUser]));
+    const usersById = new Map(userList.map(({ password, resetToken, resetTokenExpires, ...safeUser }) => [safeUser.id, safeUser]));
     res.json(activities.map(activity => ({ ...activity, user: usersById.get(activity.userId) || null })));
   });
 
@@ -1725,7 +1796,7 @@ app.post("/api/user/change-password", async (req, res) => {
         role: role || "admin"
       });
 
-      const { password: _, ...sanitized } = newUser;
+      const { password: _, resetToken: _rt, resetTokenExpires: _rte, ...sanitized } = newUser as any;
 
       sendWelcomeEmail(newUser.email, newUser.username).catch(err => {
         console.error("[ERROR] Erreur envoi email bienvenue admin:", err);
@@ -1852,103 +1923,103 @@ app.post("/api/user/change-password", async (req, res) => {
     }
   });
 
-  // Notifications API
+  // ---------------------------------------------------------------------------
+  // Notifications.
+  //
+  // Stored rows (see shared/notifications.ts), one per recipient. Every query
+  // below is scoped to the signed-in user's own id in SQL, so there is no id a
+  // caller can pass to reach somebody else's row: a foreign or unknown id on the
+  // "mark read" route is a 404 either way.
+  //
+  // Which audiences a caller may see is decided here from their role, never
+  // from the request: a customer gets `customer` rows only, whatever the
+  // `audience` parameter says.
+  // ---------------------------------------------------------------------------
+  const allowedAudiences = (user: any): NotificationAudience[] =>
+    ["admin", "superadmin"].includes(user.role) ? ["admin", "customer"] : ["customer"];
+
+  /** Narrow to one audience if asked for, but never widen past what the role allows. */
+  const requestedAudiences = (user: any, raw: unknown): NotificationAudience[] => {
+    const allowed = allowedAudiences(user);
+    return raw === "admin" || raw === "customer" ? allowed.filter((audience) => audience === raw) : allowed;
+  };
+
   app.get("/api/notifications", async (req, res) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
     const currentUser = req.user as any;
-    
+    const parsedLimit = Number.parseInt(String(req.query.limit ?? ""), 10);
+    const limit = Number.isFinite(parsedLimit)
+      ? Math.min(NOTIFICATION_PAGE_MAX, Math.max(1, parsedLimit))
+      : NOTIFICATION_PAGE_DEFAULT;
     try {
-      if (currentUser.role === "admin" || currentUser.role === "superadmin") {
-        const allMessages = await storage.getMessages();
-        const unreadMessages = allMessages.filter(m => !m.read);
-        const recentMessages = allMessages.slice(0, 10).map(m => ({
-          id: m.id,
-          type: "message",
-          title: `Nouveau message de ${m.name}`,
-          description: m.message?.substring(0, 80) + (m.message?.length > 80 ? "..." : ""),
-          createdAt: m.createdAt,
-          read: m.read,
-          link: "/admin?section=messages"
-        }));
-
-        // Stock alerts are derived in SQL instead of by reading the whole table.
-        // `stock_asc` over the in-stock rows is exactly the low-stock list, and
-        // the quantity index serves it, so this stays cheap at any catalogue
-        // size. The badge count uses `total`, so it is not capped by the limit.
-        const LOW_STOCK_ALERT_LIMIT = 20;
-        const [lowStockPage, outOfStockPage] = await Promise.all([
-          storage.queryProducts({ page: 1, limit: LOW_STOCK_ALERT_LIMIT, search: "", category: "", stock: "in", promo: "all", sort: "stock_asc" }),
-          storage.queryProducts({ page: 1, limit: LOW_STOCK_ALERT_LIMIT, search: "", category: "", stock: "out", promo: "all", sort: "newest" }),
-        ]);
-
-        // "Low stock" means 1..5 units. A dedicated range filter is not exposed in
-        // the public API, so trim the (already cheapest-first) page here.
-        const lowStockProducts = lowStockPage.items
-          .filter((p) => Number(p.quantity ?? 0) <= 5)
-          .map(p => ({
-            id: p.id,
-            type: "stock_alert",
-            title: `Stock faible: ${p.name}`,
-            description: `Il ne reste que ${p.quantity} unité(s) en stock.`,
-            createdAt: new Date().toISOString(),
-            read: false,
-            link: "/admin?section=stock"
-          }));
-
-        const outOfStockProducts = outOfStockPage.items.map(p => ({
-          id: p.id,
-          type: "out_of_stock",
-          title: `Rupture de stock: ${p.name}`,
-          description: `Le produit "${p.name}" est en rupture de stock.`,
-          createdAt: new Date().toISOString(),
-          read: false,
-          link: "/admin?section=stock"
-        }));
-
-        const stockNotifications = [...lowStockProducts, ...outOfStockProducts];
-        const allNotifications = [...recentMessages, ...stockNotifications];
-        // The true number of products needing attention, not the capped list length.
-        const outOfStockTotal = outOfStockPage.total;
-        const badgeCount = unreadMessages.length + outOfStockTotal;
-
-        res.json({
-          count: badgeCount,
-          items: allNotifications
-        });
-      } else {
-        const activities = await storage.getUserActivitiesByUserId(currentUser.id);
-        const recentActivityItems = activities.slice(0, 10).map(a => {
-          const typeLabels: Record<string, string> = {
-            status_change: "Mise à jour de commande",
-            quote_request: "Demande de devis",
-            password_change: "Mot de passe modifié",
-            profile_update: "Profil mis à jour",
-            login: "Connexion",
-            logout: "Déconnexion",
-            register: "Inscription"
-          };
-          return {
-            id: a.id,
-            type: a.type,
-            title: typeLabels[a.type] || a.type,
-            description: a.details || "",
-            createdAt: a.createdAt,
-            read: true,
-            link: "/my-history"
-          };
-        });
-        
-        const unreadCount = activities.filter(a => a.type === "status_change").length;
-
-        res.json({
-          count: unreadCount,
-          items: recentActivityItems
-        });
-      }
+      res.json(await storage.listNotifications(currentUser.id, requestedAudiences(currentUser, req.query.audience), limit));
     } catch (err) {
-      console.error("[ERROR] Failed to fetch notifications:", err);
-      res.status(500).json({ count: 0, items: [] });
+      console.error("[NOTIFICATIONS] list failed:", err);
+      res.status(500).json({ message: "Unable to load notifications" });
     }
+  });
+
+  /**
+   * Admin history: the signed-in admin's own `admin` rows, one page at a time.
+   *
+   * Paged and filtered in SQL with a fixed page size, so the response is the
+   * same size on the shop's first day and after years of orders. Like every
+   * other notification query it is scoped to the caller's user id; the role
+   * check is what keeps a customer out, and the `admin` audience is fixed here
+   * rather than read from the request.
+   */
+  app.get("/api/admin/notifications", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    const currentUser = req.user as any;
+    if (!["admin", "superadmin"].includes(currentUser.role)) return res.sendStatus(403);
+
+    const rawFilter = String(req.query.filter ?? "all");
+    if (!(ADMIN_NOTIFICATION_FILTERS as readonly string[]).includes(rawFilter)) {
+      return res.status(400).json({ message: "Invalid filter" });
+    }
+    const filter = rawFilter as AdminNotificationFilter;
+    const parsedPage = Number.parseInt(String(req.query.page ?? "1"), 10);
+    const requestedPage = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+    const pageSize = ADMIN_NOTIFICATION_PAGE_SIZE;
+
+    try {
+      const options = {
+        unreadOnly: filter === "unread",
+        type: filter === "all" || filter === "unread" ? undefined : filter,
+      };
+      let page = requestedPage;
+      let result = await storage.listNotifications(currentUser.id, ["admin"], pageSize, { ...options, offset: (page - 1) * pageSize });
+      const totalPages = Math.max(1, Math.ceil(result.total / pageSize));
+      // A page past the end (rows were marked read under the "unread" filter,
+      // or the URL was typed by hand) answers with the last real page instead
+      // of an empty one.
+      if (page > totalPages) {
+        page = totalPages;
+        result = await storage.listNotifications(currentUser.id, ["admin"], pageSize, { ...options, offset: (page - 1) * pageSize });
+      }
+      res.json({ ...result, page, pageSize, totalPages });
+    } catch (err) {
+      console.error("[NOTIFICATIONS] admin history failed:", err);
+      res.status(500).json({ message: "Unable to load notifications" });
+    }
+  });
+
+  // Registered before `/:id/read` so "read-all" is never parsed as an id.
+  app.post("/api/notifications/read-all", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    const currentUser = req.user as any;
+    const updated = await storage.markAllNotificationsRead(currentUser.id, requestedAudiences(currentUser, req.body?.audience));
+    res.json({ updated });
+  });
+
+  app.post("/api/notifications/:id/read", async (req, res) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    const currentUser = req.user as any;
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Invalid notification ID" });
+    const found = await storage.markNotificationRead(id, currentUser.id, allowedAudiences(currentUser));
+    if (!found) return res.status(404).json({ message: "Notification not found" });
+    res.sendStatus(204);
   });
 
   // ---------------------------------------------------------------------------
@@ -2011,155 +2082,10 @@ app.post("/api/user/change-password", async (req, res) => {
     }
   }
 
-// Route de debug pour voir le contenu de selectedItems
-app.get('/api/debug/message/:id', async (req, res) => {
-  // Admin-only, not merely authenticated: this returns a full contact message
-  // (name, phone, address, notes), and a signed-in customer must not be able to
-  // read other people's enquiries. /api/messages is already admin-gated, so
-  // leaving this at isAuthenticated() would be a hole straight around it.
-  if (!req.isAuthenticated()) return res.sendStatus(401);
-  const currentUser = req.user as any;
-  if (!["admin", "superadmin"].includes(currentUser.role)) return res.sendStatus(403);
-  const id = parseInt(req.params.id);
-  if (isNaN(id)) return res.status(400).json({ message: "ID invalide" });
-  
-  const messages = await storage.getMessages();
-  const message = messages.find(m => m.id === id);
-  
-  if (!message) {
-    return res.status(404).json({ message: "Message non trouvé" });
-  }
-  
-  // Tenter de parser selectedItems
-  let parsed = null;
-  let parseError = null;
-  if (message.selectedItems) {
-    try {
-      parsed = JSON.parse(message.selectedItems);
-    } catch (e: any) {
-      parseError = e.message;
-      // Essayer avec eval
-      try {
-        parsed = eval(`(${message.selectedItems})`);
-      } catch (e2: any) {
-        parseError = e2.message;
-      }
-    }
-  }
-  
-  res.json({
-    id: message.id,
-    name: message.name,
-    email: message.email,
-    selectedItemsRaw: message.selectedItems,
-    selectedItemsType: typeof message.selectedItems,
-    parsed: parsed,
-    parseError: parseError,
-    status: message.status,
-    createdAt: message.createdAt
-  });
-});
-  // ============================================
-  //  ROUTE DE DEBUG - Voir le contenu de selectedItems
-  // ============================================
-  app.get('/api/debug/message/:id', async (req, res) => {
-    // Duplicate of the route above; Express always stops at the first match, so
-    // this block is unreachable. Kept only so the role guard is not accidentally
-    // relaxed if the first registration is ever removed.
-    if (!req.isAuthenticated()) return res.sendStatus(401);
-    const currentUser = req.user as any;
-    if (!["admin", "superadmin"].includes(currentUser.role)) return res.sendStatus(403);
-    const id = parseInt(req.params.id);
-    if (isNaN(id)) return res.status(400).json({ message: "ID invalide" });
-    
-    try {
-      const messages = await storage.getMessages();
-      const message = messages.find(m => m.id === id);
-      
-      if (!message) {
-        return res.status(404).json({ message: "Message non trouvé" });
-      }
-      
-      // Tenter de parser selectedItems
-      let parsed = null;
-      let parseError = null;
-      let parsedType = 'null';
-      
-      if (message.selectedItems) {
-        parsedType = typeof message.selectedItems;
-        try {
-          parsed = JSON.parse(message.selectedItems);
-          dbg('Parse JSON réussi');
-        } catch (e: any) {
-          parseError = e.message;
-          dbg('Erreur JSON:', e.message);
-          // Essayer avec eval
-          try {
-            parsed = eval(`(${message.selectedItems})`);
-            dbg('Parse avec eval réussi');
-          } catch (e2: any) {
-            parseError = e2.message;
-            dbg('Erreur eval:', e2.message);
-          }
-        }
-      }
-      
-      res.json({
-        id: message.id,
-        name: message.name,
-        email: message.email,
-        phone: message.phone,
-        message: message.message,
-        selectedItemsRaw: message.selectedItems,
-        selectedItemsType: typeof message.selectedItems,
-        parsed: parsed,
-        parseError: parseError,
-        status: message.status,
-        createdAt: message.createdAt,
-        read: message.read
-      });
-    } catch (err) {
-      console.error("[MESSAGES] Debug message parse failed:", err);
-      res.status(500).json({ error: String(err) });
-    }
-  });
+  // Debug data routes (/api/debug/message/:id, /api/debug/stock,
+  // /api/debug/messages) were removed in the production-hardening pass. They
+  // dumped contact-message and stock data and were never used by the product;
+  // admin-gated or not, debug data endpoints do not belong in production.
 
-  // ============================================
-  //  ROUTE DE DEBUG - Voir tout le stock
-  // ============================================
-  app.get('/api/debug/stock', async (req, res) => {
-    // Admin-only: exposes product names and stock levels to any signed-in user.
-    if (!req.isAuthenticated()) return res.sendStatus(401);
-    const currentUser = req.user as any;
-    if (!["admin", "superadmin"].includes(currentUser.role)) return res.sendStatus(403);
-    // Capped and ordered rather than dumping the table: this used to return one
-    // row per product, which is how a debug endpoint becomes an outage at a few
-    // thousand products.
-    const page = await storage.queryProducts({ page: 1, limit: 100, search: "", category: "", stock: "all", promo: "all", sort: "stock_asc" });
-    res.json(page.items.map(p => ({
-      id: p.id,
-      name: p.name,
-      quantity: p.quantity,
-      type: typeof p.quantity
-    })));
-  });
-
-  // ============================================
-  //  ROUTE DE DEBUG - Tous les messages
-  // ============================================
-  app.get('/api/debug/messages', async (req, res) => {
-    // Admin-only: returns every contact message (name + selectedItems) in one
-    // response, so an authenticated customer could harvest the whole inbox.
-    if (!req.isAuthenticated()) return res.sendStatus(401);
-    const currentUser = req.user as any;
-    if (!["admin", "superadmin"].includes(currentUser.role)) return res.sendStatus(403);
-    const messages = await storage.getMessages();
-    res.json(messages.map(m => ({
-      id: m.id,
-      name: m.name,
-      selectedItems: m.selectedItems,
-      status: m.status
-    })));
-  });
   return httpServer;
 }
