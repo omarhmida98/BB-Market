@@ -196,13 +196,16 @@ async function seed(client: pg.Pool): Promise<Seed> {
   ]);
 
   const promoPrice = 7;
+  // Products link to a category by `category_id`; the legacy text column alone
+  // reads back as uncategorised, which would empty the category filter and the
+  // top-categories panel. Each row links through the same name the backfill used.
   const products = await client.query(
-    `insert into products (name, description, image_url, category, quantity, price) values
-       ('Rehearsal Boite',        'd', '/x.png', $1, 40, 25),
-       ('Rehearsal Ruban',        'd', '/x.png', $1, 40, 10),
-       ('Rehearsal Low Stock',    'd', '/x.png', $1, $2, 12),
-       ('Rehearsal Out Of Stock', 'd', '/x.png', $1, 0, 30),
-       ('Rehearsal Doomed',       'd', '/x.png', $3, 15, 40)
+    `insert into products (name, description, image_url, category, category_id, quantity, price) values
+       ('Rehearsal Boite',        'd', '/x.png', $1, (select id from categories where name = $1), 40, 25),
+       ('Rehearsal Ruban',        'd', '/x.png', $1, (select id from categories where name = $1), 40, 10),
+       ('Rehearsal Low Stock',    'd', '/x.png', $1, (select id from categories where name = $1), $2, 12),
+       ('Rehearsal Out Of Stock', 'd', '/x.png', $1, (select id from categories where name = $1), 0, 30),
+       ('Rehearsal Doomed',       'd', '/x.png', $3, (select id from categories where name = $3), 15, 40)
      returning id, name`,
     [categoryName, PRODUCT_LOW_STOCK_THRESHOLD, doomedCategory],
   );
@@ -222,8 +225,8 @@ async function seed(client: pg.Pool): Promise<Seed> {
   );
 
   await client.query(
-    `insert into promos (product_name, category, description, image_url) values
-       ('Rehearsal Ruban', $1, 'promo image row', '/promo.png')`,
+    `insert into promos (product_name, category, category_id, description, image_url) values
+       ('Rehearsal Ruban', $1, (select id from categories where name = $1), 'promo image row', '/promo.png')`,
     [categoryName],
   );
 
@@ -498,8 +501,8 @@ const client = new pg.Pool({ connectionString: URL_RE, ssl: useSsl, max: 4, opti
     // `price` is `double precision` on PostgreSQL and `real` on SQLite, so a double
     // round-trip is worth asserting: 25.55 has no exact binary form either way.
     const priced = await client.query(
-      `insert into products (name, description, image_url, category, quantity, price)
-       values ('Rehearsal Fractional','d','/x.png',$1,1,25.55) returning id, price`,
+      `insert into products (name, description, image_url, category, category_id, quantity, price)
+       values ('Rehearsal Fractional','d','/x.png',$1,(select id from categories where name = $1),1,25.55) returning id, price`,
       [seedData.categoryName],
     );
     near("a fractional price round-trips through double precision", priced.rows[0].price, 25.55, 0.0001);

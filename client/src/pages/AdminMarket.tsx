@@ -24,6 +24,7 @@ import { formatDate, formatMoney } from "@/lib/format";
 import { ADMIN_OPEN_ORDER_EVENT } from "@/lib/notifications";
 import { NotificationDropdown } from "@/components/NotificationDropdown";
 import i18n from "@/lib/i18n";
+import { ApiError, apiErrorMessage, jsonFetch } from "@/lib/api";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import AdminAnalytics from "@/components/admin/AdminAnalytics";
@@ -33,8 +34,9 @@ import logo from "@assets/bb_market_logo.png";
 type Category = { id: number; name: string; slug: string; active: boolean };
 // Promotion fields are included because the admin list resolves the promo state
 // per row. `price` stays `number | string` so a legacy text column cannot break
-// rendering; resolvePromotion coerces either.
-type Product = { id: number; name: string; description: string; imageUrl: string; category: string; quantity: number | string; price: number | string; promoPrice?: number | string | null; promoStart?: string | number | Date | null; promoEnd?: string | number | Date | null };
+// rendering; resolvePromotion coerces either. `category` is the joined display
+// name (null when uncategorised) and `categoryId` is the link itself.
+type Product = { id: number; name: string; description: string; imageUrl: string; category: string | null; categoryId: number | null; quantity: number | string; price: number | string; promoPrice?: number | string | null; promoStart?: string | number | Date | null; promoEnd?: string | number | Date | null };
 type Order = { id: number; customerName: string; email?: string | null; phone: string; address?: string | null; notes?: string | null; itemsJson: string; subtotal: number; total: number; fulfillmentMethod?: FulfillmentMethod | null; deliveryFee?: number | string | null; status: string; paymentMethod: string; createdAt?: string | number | Date | null };
 
 /**
@@ -168,13 +170,6 @@ function whatsappOrderLink(order: Order): string | null {
   return `https://wa.me/${international}?text=${message}`;
 }
 
-async function jsonFetch<T>(url: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(url, { credentials: "include", ...options });
-  if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
-  if (res.status === 204) return undefined as T;
-  return res.json();
-}
-
 export default function AdminMarket() {
   const { user, isLoading, logoutMutation } = useAuth();
   const [, setLocation] = useLocation();
@@ -198,7 +193,9 @@ export default function AdminMarket() {
     return () => window.removeEventListener(ADMIN_OPEN_ORDER_EVENT, onOpenOrder);
   }, []);
   const [categoryName, setCategoryName] = useState("");
-  const [productForm, setProductForm] = useState({ name: "", description: "", category: "", quantity: "0", price: "0" });
+  // `categoryId` is the value the form posts; the picker offers ids and the
+  // server resolves the id (never a typed name) into both columns.
+  const [productForm, setProductForm] = useState({ name: "", description: "", categoryId: "", quantity: "0", price: "0" });
   const [promotionForm, setPromotionForm] = useState<PromotionFormValues>(EMPTY_PROMOTION_FORM);
   const [productImage, setProductImage] = useState<File | null>(null);
   const [socialDrafts, setSocialDrafts] = useState<Record<SocialPlatform, string>>({ instagram: "", facebook: "", tiktok: "" });
@@ -262,7 +259,7 @@ export default function AdminMarket() {
         ),
       });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: t("admin.error_title", "Erreur"), description: e.message }),
+    onError: (e: unknown) => toast({ variant: "destructive", title: t("admin.error_title", "Erreur"), description: apiErrorMessage(e, t) }),
   });
 
   const removeSocialLink = useMutation({
@@ -274,18 +271,41 @@ export default function AdminMarket() {
       setSocialPreview(null);
       toast({ title: t("admin.social_link_deleted", { platform: PLATFORM_LABEL[platform] }) });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: t("admin.error_title", "Erreur"), description: e.message }),
+    onError: (e: unknown) => toast({ variant: "destructive", title: t("admin.error_title", "Erreur"), description: apiErrorMessage(e, t) }),
   });
 
   const createCategory = useMutation({
     mutationFn: () => jsonFetch<Category>("/api/categories", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: categoryName }) }),
     onSuccess: () => { setCategoryName(""); queryClient.invalidateQueries({ queryKey: ["/api/categories"] }); toast({ title: t("admin.category_added") }); },
-    onError: (e: Error) => toast({ variant: "destructive", title: t("admin.error_title", "Erreur"), description: e.message }),
+    onError: (e: unknown) => toast({ variant: "destructive", title: t("admin.error_title", "Erreur"), description: apiErrorMessage(e, t) }),
   });
 
   const deleteCategory = useMutation({
     mutationFn: (id: number) => jsonFetch<void>(`/api/categories/${id}`, { method: "DELETE" }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/categories"] }),
+    onError: (error: unknown) => {
+      // A refused delete answers with counts rather than a sentence (see the
+      // DELETE /api/categories/:id route), so the toast can be built in the
+      // reader's language and name exactly what is still pointing at it.
+      const counts =
+        error instanceof ApiError && error.code === "category_in_use"
+          ? (error.payload?.counts as Record<string, number> | undefined)
+          : undefined;
+      const parts = counts
+        ? [
+            counts.products > 0 ? t("admin.category_delete_blocked_products", { count: counts.products }) : "",
+            counts.homepageSections > 0 ? t("admin.category_delete_blocked_sections", { count: counts.homepageSections }) : "",
+            counts.promos > 0 ? t("admin.category_delete_blocked_promos", { count: counts.promos }) : "",
+          ].filter(Boolean)
+        : [];
+      toast({
+        variant: "destructive",
+        title: parts.length ? t("admin.category_delete_blocked_title") : t("admin.error_title", "Erreur"),
+        description: parts.length
+          ? `${parts.join(" · ")} ${t("admin.category_delete_blocked_hint")}`
+          : apiErrorMessage(error, t),
+      });
+    },
   });
 
   const createProduct = useMutation({
@@ -301,13 +321,13 @@ export default function AdminMarket() {
       return jsonFetch<Product>("/api/products", { method: "POST", body: fd });
     },
     onSuccess: () => {
-      setProductForm({ name: "", description: "", category: "", quantity: "0", price: "0" });
+      setProductForm({ name: "", description: "", categoryId: "", quantity: "0", price: "0" });
       setPromotionForm(EMPTY_PROMOTION_FORM);
       setProductImage(null);
       queryClient.invalidateQueries({ queryKey: ["/api/products"] });
       toast({ title: t("admin.product_added", "Produit ajouté") });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: t("admin.product_not_added", "Produit non ajouté"), description: e.message }),
+    onError: (e: unknown) => toast({ variant: "destructive", title: t("admin.product_not_added", "Produit non ajouté"), description: apiErrorMessage(e, t) }),
   });
 
   /**
@@ -330,7 +350,7 @@ export default function AdminMarket() {
       setEditingProductId(null);
       toast({ title: t("admin.product_updated", "Produit mis à jour") });
     },
-    onError: (e: Error) => toast({ variant: "destructive", title: t("admin.product_update_failed", "Mise à jour impossible"), description: e.message }),
+    onError: (e: unknown) => toast({ variant: "destructive", title: t("admin.product_update_failed", "Mise à jour impossible"), description: apiErrorMessage(e, t) }),
   });
 
   const deleteProduct = useMutation({
@@ -432,8 +452,8 @@ export default function AdminMarket() {
               <Panel title={t("admin.product_add")} icon={<PackagePlus className="w-5 h-5" />}>
                 <form onSubmit={(e) => { e.preventDefault(); createProduct.mutate(); }} className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
                   <Input required placeholder={t("admin.product_name_placeholder")} value={productForm.name} onChange={v => setProductForm(p => ({ ...p, name: v }))} />
-                  <select required value={productForm.category} onChange={e => setProductForm(p => ({ ...p, category: e.target.value }))} className="field">
-                    <option value="">{t("admin.products_choose_category")}</option>{(categories.data || []).filter(c => c.active).map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                  <select required value={productForm.categoryId} onChange={e => setProductForm(p => ({ ...p, categoryId: e.target.value }))} className="field">
+                    <option value="">{t("admin.products_choose_category")}</option>{(categories.data || []).filter(c => c.active).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                   <Input required type="number" step="0.001" min="0" placeholder={t("admin.product_price_placeholder")} value={productForm.price} onChange={v => setProductForm(p => ({ ...p, price: v }))} />
                   <Input required type="number" min="0" placeholder={t("admin.product_stock_placeholder")} value={productForm.quantity} onChange={v => setProductForm(p => ({ ...p, quantity: v }))} />
@@ -450,7 +470,7 @@ export default function AdminMarket() {
                 </form>
               </Panel>
               <AdminProductsPanel
-                categoryOptions={(categories.data || []).filter(c => c.active).map(c => c.name)}
+                categories={(categories.data || []).filter(c => c.active).map(c => ({ id: c.id, name: c.name }))}
                 onDelete={id => deleteProduct.mutate(id)}
                 onStock={(id, quantity) => updateStock.mutate({ id, quantity })}
                 onEdit={(id, payload) => updateProduct.mutate({ id, payload })}
@@ -607,8 +627,9 @@ function Input({ value, onChange, ...props }: Omit<React.InputHTMLAttributes<HTM
  * The stock input is local state keyed on the product id so it resets when
  * paging to a different product set, and it is not remounted per keystroke.
  */
-function AdminProductRow({ product, onDelete, onStock, onEdit, editing, onStartEdit, onCancelEdit, saving }: {
+function AdminProductRow({ product, categories, onDelete, onStock, onEdit, editing, onStartEdit, onCancelEdit, saving }: {
   product: Product;
+  categories: { id: number; name: string }[];
   onDelete: () => void;
   onStock: (q: number) => void;
   onEdit: (payload: Record<string, unknown>) => void;
@@ -623,11 +644,13 @@ function AdminProductRow({ product, onDelete, onStock, onEdit, editing, onStartE
 
   // Edit draft. Seeded from the row, so opening the form always shows what is
   // actually stored rather than a stale previous edit of the same product.
+  // The category is held as the id string a <select> needs; "" means
+  // uncategorised, which the server stores as a NULL link.
   const [draft, setDraft] = useState({
     name: product.name,
     price: String(product.price ?? 0),
     quantity: String(product.quantity ?? 0),
-    category: product.category,
+    categoryId: product.categoryId === null || product.categoryId === undefined ? "" : String(product.categoryId),
   });
   const [promo, setPromo] = useState<PromotionFormValues>(() => promotionValuesFromProduct(product));
 
@@ -635,12 +658,25 @@ function AdminProductRow({ product, onDelete, onStock, onEdit, editing, onStartE
   // not being edited, keep the draft in step with the server.
   useEffect(() => {
     if (editing) return;
-    setDraft({ name: product.name, price: String(product.price ?? 0), quantity: String(product.quantity ?? 0), category: product.category });
+    setDraft({
+      name: product.name,
+      price: String(product.price ?? 0),
+      quantity: String(product.quantity ?? 0),
+      categoryId: product.categoryId === null || product.categoryId === undefined ? "" : String(product.categoryId),
+    });
     setPromo(promotionValuesFromProduct(product));
   }, [product, editing]);
 
   const promotion = resolvePromotion(product);
   const promoErrors = validatePromotion({ price: draft.price, ...promo });
+
+  // An inactive (or since-deleted) category still names the product, so it is
+  // offered alongside the active ones instead of the picker resetting to a
+  // category the row never had.
+  const categoryChoices =
+    draft.categoryId && !categories.some((category) => String(category.id) === draft.categoryId)
+      ? [{ id: Number(draft.categoryId), name: product.category || t("products.uncategorized") }, ...categories]
+      : categories;
 
   const save = () => {
     if (promoErrors.length) return;
@@ -648,7 +684,9 @@ function AdminProductRow({ product, onDelete, onStock, onEdit, editing, onStartE
       name: draft.name,
       price: draft.price,
       quantity: Number(draft.quantity) || 0,
-      category: draft.category,
+      // The id only: storage resolves it through `categories` and keeps the
+      // legacy text column in step with whatever name it points at today.
+      categoryId: draft.categoryId ? Number(draft.categoryId) : null,
       // Always all three: the server clears a stale bound when a promo changes.
       promoPrice: promo.promoPrice === "" ? null : Number(promo.promoPrice),
       promoStart: promo.promoStart ? new Date(promo.promoStart).toISOString() : null,
@@ -657,7 +695,7 @@ function AdminProductRow({ product, onDelete, onStock, onEdit, editing, onStartE
   };
 
   return <div className="border rounded-2xl p-4 bg-background">
-    <div className="flex gap-4"><img src={product.imageUrl} alt={product.name} className="w-20 h-20 rounded-xl object-cover bg-muted" /><div className="min-w-0 flex-1"><div className="font-black truncate">{product.name}</div><div className="text-xs text-muted-foreground">{product.category}</div>
+    <div className="flex gap-4"><img src={product.imageUrl} alt={product.name} className="w-20 h-20 rounded-xl object-cover bg-muted" /><div className="min-w-0 flex-1"><div className="font-black truncate">{product.name}</div><div className="text-xs text-muted-foreground">{product.category || t("products.uncategorized")}</div>
         <div className="flex items-center gap-2 mt-2 flex-wrap">
           {/* Same price renderer the storefront uses, so the admin cannot see a
               different number from a customer. */}
@@ -694,7 +732,10 @@ function AdminProductRow({ product, onDelete, onStock, onEdit, editing, onStartE
           </div>
           <div>
             <label className="text-[11px] uppercase tracking-wider font-bold text-muted-foreground">{t("admin.products_category")}</label>
-            <input value={draft.category} onChange={e => setDraft(d => ({ ...d, category: e.target.value }))} className="field mt-1" />
+            <select value={draft.categoryId} onChange={e => setDraft(d => ({ ...d, categoryId: e.target.value }))} className="field mt-1">
+              <option value="">{t("products.uncategorized")}</option>
+              {categoryChoices.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
           </div>
         </div>
         <PromotionFields regularPrice={draft.price} values={promo} onChange={setPromo} idPrefix={`edit-${product.id}`} />
@@ -747,8 +788,8 @@ const EMPTY_PRODUCT_LIST: ProductListResponse = { items: [], page: 1, limit: 25,
  * every product and rendered them all, which is what makes an admin panel
  * unusable past a few hundred rows.
  */
-function AdminProductsPanel({ categoryOptions, onDelete, onStock, onEdit, editingProductId, onStartEdit, onCancelEdit, saving }: {
-  categoryOptions: string[];
+function AdminProductsPanel({ categories, onDelete, onStock, onEdit, editingProductId, onStartEdit, onCancelEdit, saving }: {
+  categories: { id: number; name: string }[];
   onDelete: (id: number) => void;
   onStock: (id: number, quantity: number) => void;
   onEdit: (id: number, payload: Record<string, unknown>) => void;
@@ -762,14 +803,22 @@ function AdminProductsPanel({ categoryOptions, onDelete, onStock, onEdit, editin
   const [limit, setLimit] = useState<number>(25);
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
-  const [category, setCategory] = useState("");
+  // Id as a string because that is what a <select> reports; "" is "all".
+  const [categoryId, setCategoryId] = useState("");
   const [stock, setStock] = useState<ProductStockFilter>("all");
   const [sort, setSort] = useState<ProductSort>("newest");
 
   // The query lives here, next to the controls that shape it. The page never
   // holds more than `limit` products, so the panel cost is independent of
   // catalogue size.
-  const { data, isFetching } = useProducts({ page, limit, search, category, stock, sort });
+  const { data, isFetching } = useProducts({
+    page,
+    limit,
+    search,
+    categoryId: categoryId ? Number(categoryId) : undefined,
+    stock,
+    sort,
+  });
   const result = data ?? EMPTY_PRODUCT_LIST;
 
   // Debounce the search box so typing does not fire a query per keystroke.
@@ -779,7 +828,7 @@ function AdminProductsPanel({ categoryOptions, onDelete, onStock, onEdit, editin
   }, [searchInput]);
 
   // Any change to the result set invalidates the current page number.
-  useEffect(() => { setPage(1); }, [search, category, stock, sort, limit]);
+  useEffect(() => { setPage(1); }, [search, categoryId, stock, sort, limit]);
 
   const total = result.total;
   const totalPages = result.totalPages;
@@ -798,9 +847,9 @@ function AdminProductsPanel({ categoryOptions, onDelete, onStock, onEdit, editin
         <input value={searchInput} onChange={e => setSearchInput(e.target.value)} placeholder={t("admin.product_name_placeholder")} className="field mt-1" />
       </div>
       <div><label className="text-[11px] uppercase tracking-wider font-bold text-muted-foreground">{t("admin.products_category")}</label>
-        <select value={category} onChange={e => setCategory(e.target.value)} className="field mt-1">
+        <select value={categoryId} onChange={e => setCategoryId(e.target.value)} className="field mt-1">
           <option value="">{t("admin.products_all")}</option>
-          {(categoryOptions || []).map(c => <option key={c} value={c}>{c}</option>)}
+          {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
       </div>
       <div><label className="text-[11px] uppercase tracking-wider font-bold text-muted-foreground">{t("admin.products_stock")}</label>
@@ -833,6 +882,7 @@ function AdminProductsPanel({ categoryOptions, onDelete, onStock, onEdit, editin
           <AdminProductRow
             key={product.id}
             product={product}
+            categories={categories}
             onDelete={() => onDelete(product.id)}
             onStock={q => onStock(product.id, q)}
             onEdit={payload => onEdit(product.id, payload)}
@@ -985,6 +1035,8 @@ type HomepageSectionRow = {
   titleEn: string | null;
   titleAr: string | null;
   type: HomepageSectionType;
+  categoryId: number | null;
+  /** Joined display name of `categoryId`; null when the shelf has no category. */
   category: string | null;
   maxPrice: number | null;
   maxProducts: number;
@@ -1021,7 +1073,8 @@ type HomepageSectionDraft = {
   titleEn: string;
   titleAr: string;
   type: HomepageSectionType;
-  category: string;
+  /** Id as a string, "" when no category is chosen; `toSectionPayload` coerces. */
+  categoryId: string;
   maxPrice: string;
   maxProducts: string;
   displayOrder: string;
@@ -1043,7 +1096,7 @@ const EMPTY_SECTION_DRAFT: HomepageSectionDraft = {
   titleEn: "",
   titleAr: "",
   type: "newest",
-  category: "",
+  categoryId: "",
   maxPrice: "",
   maxProducts: String(HOMEPAGE_SECTION_DEFAULT_PRODUCTS),
   displayOrder: "",
@@ -1122,7 +1175,7 @@ function toSectionDraft(section: HomepageSectionRow): HomepageSectionDraft {
     titleEn: section.titleEn ?? "",
     titleAr: section.titleAr ?? "",
     type: section.type,
-    category: section.category ?? "",
+    categoryId: section.categoryId === null || section.categoryId === undefined ? "" : String(section.categoryId),
     maxPrice: section.maxPrice === null || section.maxPrice === undefined ? "" : String(section.maxPrice),
     maxProducts: String(section.maxProducts),
     displayOrder: String(section.displayOrder),
@@ -1159,7 +1212,9 @@ function toSectionPayload(draft: HomepageSectionDraft) {
     titleEn: text(draft.titleEn),
     titleAr: text(draft.titleAr),
     type: draft.type,
-    category: text(draft.category),
+    // The link only. Storage derives the legacy `category` text from whatever
+    // name this id points at, so the two can never drift apart.
+    categoryId: draft.categoryId ? Number(draft.categoryId) : null,
     maxPrice: number(draft.maxPrice) ?? null,
     maxProducts: Number(draft.maxProducts) || HOMEPAGE_SECTION_DEFAULT_PRODUCTS,
     displayOrder: number(draft.displayOrder) ?? 0,
@@ -1180,25 +1235,13 @@ function toSectionPayload(draft: HomepageSectionDraft) {
 /**
  * Pull the readable message out of an API error.
  *
- * `jsonFetch` rejects with the raw response text, and every route here answers
- * with `{ message }`, so the rejection is a JSON string rather than a sentence.
- * Showing it verbatim would put `{"message":"Prix maximum requis..."}` in a toast.
+ * The route answers with `{ message }`, and for the errors it wants translated
+ * that message is an i18n key the server cannot resolve itself (it does not know
+ * the admin's language). `apiErrorMessage` does the resolving; a real
+ * driver/proxy message passes through untouched.
  */
 function sectionErrorMessage(error: unknown, t: TFunction): string {
-  const raw = error instanceof Error ? error.message : String(error ?? "");
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed.message === "string") {
-      const message: string = parsed.message;
-      // The server validates in the reader's language it cannot know, so it
-      // returns `admin.homepage_error_*` keys. Real driver/proxy messages are
-      // passed through untouched.
-      return message.startsWith("admin.") ? t(message) : message;
-    }
-  } catch {
-    // Not JSON - a plain-text error (a 500 from a proxy, say) is already readable.
-  }
-  return raw || t("admin.homepage_error_generic");
+  return apiErrorMessage(error, t, t("admin.homepage_error_generic"));
 }
 
 /**
@@ -1336,14 +1379,22 @@ function HomepageSectionsPanel() {
     queryFn: () => jsonFetch("/api/admin/homepage-sections"),
   });
 
-  // The same category list the product form offers, so a category shelf is
-  // matched against a name products can actually carry. A value already stored
-  // on the shelf being edited is kept as an option even if that category has
-  // since been removed, so opening the form never silently changes it.
+  // The same category list the product form offers, matched by id. A value
+  // already stored on the shelf being edited is kept as an option even if that
+  // category has since been deactivated, so opening the form never silently
+  // changes it.
   const categories = useQuery<Category[]>({ queryKey: ["/api/categories"], queryFn: () => jsonFetch("/api/categories") });
-  const activeCategoryNames = (categories.data || []).filter((category) => category.active).map((category) => category.name);
+  const activeCategories = (categories.data || [])
+    .filter((category) => category.active)
+    .map((category) => ({ id: category.id, name: category.name }));
+  const labelForId = (id: number): string =>
+    (sections.data || []).find((row) => row.categoryId === id)?.category ??
+    (categories.data || []).find((category) => category.id === id)?.name ??
+    t("products.uncategorized");
   const categoryOptions =
-    draft.category && !activeCategoryNames.includes(draft.category) ? [draft.category, ...activeCategoryNames] : activeCategoryNames;
+    draft.categoryId && !activeCategories.some((category) => String(category.id) === draft.categoryId)
+      ? [{ id: Number(draft.categoryId), name: labelForId(Number(draft.categoryId)) }, ...activeCategories]
+      : activeCategories;
 
   /**
    * Both caches, not just this one.
@@ -1480,7 +1531,7 @@ function HomepageSectionsPanel() {
     // surface as a server round trip. The server still re-checks everything.
     const invalid =
       (!payload.titleFr && "admin.homepage_error_title_required") ||
-      (payload.type === "category" && !payload.category && "admin.homepage_error_category_required") ||
+      (payload.type === "category" && !(Number(payload.categoryId) > 0) && "admin.homepage_error_category_required") ||
       (payload.type === "price_under" && !(Number(payload.maxPrice) > 0) && "admin.homepage_error_price_required") ||
       (payload.tileHref &&
         !payload.tileHref.startsWith("/") &&
@@ -1601,10 +1652,10 @@ function HomepageSectionsPanel() {
           {draft.type === "category" && (
             <label className="block">
               <span className="text-xs font-bold text-muted-foreground uppercase tracking-wider">{t("admin.homepage_field_category")}</span>
-              <select className="field mt-1" value={draft.category} onChange={e => field("category")(e.target.value)}>
+              <select className="field mt-1" value={draft.categoryId} onChange={e => field("categoryId")(e.target.value)}>
                 <option value="">{t("admin.homepage_pick_category")}</option>
-                {categoryOptions.map((value) => (
-                  <option key={value} value={value}>{value}</option>
+                {categoryOptions.map((option) => (
+                  <option key={option.id} value={option.id}>{option.name}</option>
                 ))}
               </select>
             </label>
@@ -1713,7 +1764,7 @@ function HomepageSectionsPanel() {
                     <div className="font-black break-words">{sectionTitle(section, i18n.language)}</div>
                     <div className="text-xs text-muted-foreground">
                       {t(HOMEPAGE_TYPE_LABEL_KEYS[section.type])}
-                      {section.type === "category" && section.category ? ` · ${section.category}` : ""}
+                      {section.type === "category" ? ` · ${section.category || t("products.uncategorized")}` : ""}
                       {section.type === "price_under" && section.maxPrice !== null
                         ? ` · ≤ ${formatMoney(Number(section.maxPrice), i18n.language)}`
                         : ""}

@@ -27,6 +27,12 @@ import {
  */
 function viewAllHref(shelf: HomepageShelf): string {
   if (shelf.type === "promotions") return "/products?promo=active";
+  // By id, so a renamed category still opens the shelf it points at. The name
+  // is only the fallback for a shelf saved before the link existed, which the
+  // catalogue resolves against the categories table anyway.
+  if (shelf.type === "category" && shelf.categoryId) {
+    return `/products?categoryId=${shelf.categoryId}`;
+  }
   if (shelf.type === "category" && shelf.category) {
     return `/products?category=${encodeURIComponent(shelf.category)}`;
   }

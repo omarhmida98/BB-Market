@@ -72,7 +72,7 @@ export default function ProductDetail() {
                   transition={{ duration: 0.5 }}
                 >
                   <span className="inline-block px-4 py-1.5 rounded-full bg-primary/10 text-primary text-sm font-semibold mb-6 max-w-full break-words">
-                    {product.category}
+                    {product.category || t("products.uncategorized")}
                   </span>
 
                   <h1 className="text-4xl lg:text-5xl font-display font-bold text-foreground mb-6 leading-tight break-words">

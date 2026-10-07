@@ -108,16 +108,30 @@ async function seed(): Promise<{ productIds: number[]; adminId: number }> {
   );
 
   const categories = ["Emballage", "Patisserie", "Maison", "Decoration", "Fête", "Autre"];
-  const insertProduct = db.prepare(
-    "insert into products (name, description, image_url, category, quantity, price) values (?,?,?,?,?,?)",
+  // Top categories group by `categories.name` through `product.category_id`, so
+  // the fixture links its rows instead of leaving every product uncategorised -
+  // which would make the panel a single `__unknown__` bucket rather than a mix.
+  const insertCategory = db.prepare("insert into categories (name, slug) values (?,?)");
+  for (const name of categories) insertCategory.run(name, `perf-${categories.indexOf(name)}`);
+  const runProduct = db.prepare(
+    "insert into products (name, description, image_url, category, category_id, quantity, price)" +
+      " values (?,?,?,?,(select id from categories where categories.name = ?),?,?)",
   );
+  const insertProduct = (
+    name: string,
+    description: string,
+    imageUrl: string,
+    category: string,
+    quantity: number,
+    price: number,
+  ) => runProduct.run(name, description, imageUrl, category, category, quantity, price);
   const productIds: number[] = [];
   const started = Date.now();
   db.transaction(() => {
     for (let i = 0; i < PRODUCTS; i++) {
       productIds.push(
         Number(
-          insertProduct.run(
+          insertProduct(
             `Produit ${i}`,
             "d",
             `/p${i}.png`,
@@ -434,10 +448,13 @@ async function explainPlans(): Promise<[string, string][]> {
     ],
     [
       "topCategories",
-      `SELECT COALESCE(p.category, '__unknown__') AS category, SUM(${qty}) AS units_sold
+      // Mirrors analytics.ts: categories are named through `product.category_id`,
+      // so the plan has to include the second join to be a realistic estimate.
+      `SELECT COALESCE(c.name, '__unknown__') AS category, SUM(${qty}) AS units_sold
        ${snapshot} LEFT JOIN products p ON p.id = ${idExpr}
+       LEFT JOIN categories c ON c.id = p.category_id
        WHERE ${nonCancelled} ${rangeWhere} AND CASE WHEN ${qty} >= 1 THEN 1 ELSE 0 END = 1
-       GROUP BY COALESCE(p.category, '__unknown__')`,
+       GROUP BY COALESCE(c.name, '__unknown__')`,
     ],
   ];
 

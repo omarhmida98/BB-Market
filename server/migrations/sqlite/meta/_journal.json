@@ -64,6 +64,13 @@
       "when": 1791300000000,
       "tag": "0008_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1791500000000,
+      "tag": "0009_category_fk",
+      "breakpoints": true
     }
   ]
 }

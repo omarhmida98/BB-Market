@@ -18,16 +18,20 @@ import {
     SelectTrigger,
     SelectValue, 
 } from "@/components/ui/select";
-import { PRODUCT_CATEGORIES } from "@shared/schema";
+import { useCategories } from "@/hooks/use-categories";
 import { useState, useMemo } from "react";
 
 export default function Promos() {
     const { t } = useTranslation();
+    // Real categories from the database, the same source the admin and the
+    // Products filter use. Ids are what the filter compares against; the name
+    // on a card is only ever the label that id resolves to.
+    const { activeCategories } = useCategories();
     const { isSelected, addToSelection, removeFromSelection, totalItems } = useSelection();
     const { user } = useAuth();
     const [, setLocation] = useLocation();
     const [search, setSearch] = useState("");
-    const [category, setCategory] = useState<string>("all");
+    const [categoryId, setCategoryId] = useState<string>("all");
     const [selectedPromoImage, setSelectedPromoImage] = useState<Promo | null>(null);
 
     const { data: promos, isLoading, isError } = useQuery<Promo[]>({
@@ -40,12 +44,12 @@ export default function Promos() {
             const matchesSearch = !search ||
                 promo.productName?.toLowerCase().includes(search.toLowerCase()) ||
                 promo.description?.toLowerCase().includes(search.toLowerCase());
-            const matchesCategory = category === "all" || promo.category === category;
+            const matchesCategory = categoryId === "all" || promo.categoryId === Number(categoryId);
             return matchesSearch && matchesCategory;
         });
-    }, [promos, search, category]);
+    }, [promos, search, categoryId]);
 
-    const activeFiltersCount = (category !== "all" ? 1 : 0) + (search ? 1 : 0);
+    const activeFiltersCount = (categoryId !== "all" ? 1 : 0) + (search ? 1 : 0);
 
     return (
         <div className="min-h-screen font-sans relative">
@@ -104,14 +108,14 @@ export default function Promos() {
                             <label className="text-xs font-bold text-slate-400 uppercase tracking-wider ms-1">
                                 {t("products.category")}
                             </label>
-                            <Select value={category} onValueChange={setCategory}>
+                            <Select value={categoryId} onValueChange={setCategoryId}>
                                 <SelectTrigger className="h-14 bg-white border-slate-200 rounded-2xl font-medium focus:ring-primary/20">
                                     <SelectValue placeholder={t("products.all_categories")} />
                                 </SelectTrigger>
                                 <SelectContent className="rounded-2xl">
                                     <SelectItem value="all" className="font-medium">{t("products.all_categories")}</SelectItem>
-                                    {PRODUCT_CATEGORIES.map((cat) => (
-                                        <SelectItem key={cat} value={cat} className="font-medium">{cat}</SelectItem>
+                                    {activeCategories.map((cat) => (
+                                        <SelectItem key={cat.id} value={String(cat.id)} className="font-medium">{cat.name}</SelectItem>
                                     ))}
                                 </SelectContent>
                             </Select>
@@ -119,7 +123,7 @@ export default function Promos() {
 
                         {activeFiltersCount > 0 && (
                             <button
-                                onClick={() => { setSearch(""); setCategory("all"); }}
+                                onClick={() => { setSearch(""); setCategoryId("all"); }}
                                 className="h-14 px-6 text-sm font-bold text-primary hover:bg-primary/5 rounded-2xl transition-all flex items-center gap-2 whitespace-nowrap"
                             >
                                 <X className="w-4 h-4" />
@@ -143,7 +147,7 @@ export default function Promos() {
                             <Gift className="w-10 h-10 text-slate-200" />
                         </div>
                         <h3 className="text-xl font-bold text-slate-900 mb-2">
-                            {search || category !== 'all' ? t("products.no_products") : t("stickers.coming_soon")}
+                            {search || categoryId !== 'all' ? t("products.no_products") : t("stickers.coming_soon")}
                         </h3>
                         <p className="text-slate-500">
                             {t("products.clear_filters")}
@@ -205,13 +209,11 @@ export default function Promos() {
                                             )}
                                         </div>
 
-                                        {promo.category && (
-                                            <div className="absolute top-4 start-4 z-10">
-                                                <div className="px-3 py-1 bg-white/90 backdrop-blur-sm text-slate-900 rounded-full text-[10px] font-bold shadow-sm border border-slate-100">
-                                                    {promo.category}
-                                                </div>
+                                        <div className="absolute top-4 start-4 z-10">
+                                            <div className="px-3 py-1 bg-white/90 backdrop-blur-sm text-slate-900 rounded-full text-[10px] font-bold shadow-sm border border-slate-100">
+                                                {promo.category || t("products.uncategorized")}
                                             </div>
-                                        )}
+                                        </div>
                                     </div>
 
                                     <div className="p-8">

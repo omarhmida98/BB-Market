@@ -78,8 +78,8 @@ export function ProductCard({ product, variant = "default" }: ProductCardProps) 
             category name truncates instead of running underneath it. */}
         <div className={`absolute ${compact ? "top-3 start-3" : "top-4 start-4"} z-20 flex ${compact ? "max-w-[calc(100%-3.25rem)]" : "max-w-[calc(100%-5.5rem)]"} flex-col items-start gap-2`}>
           {!compact && (
-            <span className="max-w-full truncate px-3 py-1 text-xs font-semibold bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm text-primary rounded-full shadow-sm" title={product.category}>
-              {product.category}
+            <span className="max-w-full truncate px-3 py-1 text-xs font-semibold bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm text-primary rounded-full shadow-sm" title={product.category || t("products.uncategorized")}>
+              {product.category || t("products.uncategorized")}
             </span>
           )}
           <span

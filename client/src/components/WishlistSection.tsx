@@ -167,7 +167,7 @@ function WishlistRow({ item, index }: { item: WishlistItem; index: number }) {
 
         <div className="min-w-0 flex-1">
           <span className="inline-block px-2.5 py-0.5 rounded-full bg-secondary text-muted-foreground text-xs font-bold mb-1.5">
-            {product.category}
+            {product.category || t("products.uncategorized")}
           </span>
           <h3 className="font-bold text-base sm:text-lg truncate" title={product.name}>
             <button

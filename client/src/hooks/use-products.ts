@@ -27,6 +27,10 @@ async function fetchProducts(query: ProductQuery): Promise<ProductListResponse> 
   if (query.page > 1) params.set("page", String(query.page));
   if (query.limit !== PRODUCT_DEFAULT_LIMIT) params.set("limit", String(query.limit));
   if (query.search) params.set("search", query.search);
+  if (query.categoryId) params.set("categoryId", String(query.categoryId));
+  // Legacy name filter: only sent when a caller still thinks in names (an old
+  // bookmark that failed to resolve to an id). The server matches it against
+  // the categories table, never against products.category.
   if (query.category) params.set("category", query.category);
   if (query.stock && query.stock !== "all") params.set("stock", query.stock);
   if (query.promo && query.promo !== "all") params.set("promo", query.promo);
@@ -75,6 +79,7 @@ export function buildProductQuery(input: ProductQueryInput = {}): ProductQuery {
     limit: input.limit ?? PRODUCT_DEFAULT_LIMIT,
     search: input.search ?? "",
     category: input.category ?? "",
+    categoryId: input.categoryId ?? undefined,
     stock: input.stock ?? "all",
     promo: input.promo ?? "all",
     sort: input.sort ?? "newest",

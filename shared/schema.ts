@@ -1,29 +1,29 @@
 import { z } from "zod";
 
-export const PRODUCT_CATEGORIES = [
-  "Naissance Boy",
-  "Naissance Girl",
-  "Mariage",
-  "Accessoire",
-  "Anniversaire",
-  "Soutenance",
-  "العمرة",
-  "Emballage",
-  "Patisserie",
-  "Cadeaux & Décor",
-  "Nouveautés",
-  "Ramadan",
-  "Saint Valentin",
-] as const;
-
-export type ProductCategory = (typeof PRODUCT_CATEGORIES)[number];
+// Categories are not a fixed list: they live in the `categories` table and are
+// managed in Admin → Categories. Every picker (the admin product form, the
+// homepage section picker, the public Products and Promos filters) reads them
+// from `/api/categories`. A product's `category` column stores the category
+// *name*, which is the value used to filter. There is deliberately no hardcoded
+// category constant here — an old demo list once lived at this spot.
 
 export type Product = {
   id: number;
   name: string;
   description: string;
   imageUrl: string;
-  category: string;
+  /**
+   * The category id — the relational source of truth (migration 0009/0010).
+   * `null` means uncategorised (a legacy row whose text category matched no
+   * category); the UI shows a translated "Uncategorised" state for it.
+   */
+  categoryId: number | null;
+  /**
+   * Display name of the category, resolved by joining `categories` on
+   * `categoryId`, so a rename reflects immediately. `null` when uncategorised.
+   * The legacy text column is never surfaced here.
+   */
+  category: string | null;
   quantity: number;
   price: number;
   /** ISO timestamp. Added by migration 0002; absent on rows written before it. */
@@ -94,7 +94,15 @@ export const productQuerySchema = z.object({
   page: z.coerce.number().int().min(1).max(100_000).default(1),
   limit: z.coerce.number().int().min(1).max(PRODUCT_MAX_LIMIT).default(PRODUCT_DEFAULT_LIMIT),
   search: z.string().trim().max(120).default(""),
+  // Legacy name filter, kept for backward compatibility with old links; the app
+  // now sends `categoryId`. When both are present `categoryId` wins.
   category: z.string().trim().max(120).default(""),
+  // Relational category filter — the one the app uses. Absent query param -> no
+  // filter; "" / invalid -> ignored (preprocessed so it never becomes NaN).
+  categoryId: z.preprocess(
+    (value) => (value === "" || value === null || value === undefined ? undefined : Number(value)),
+    z.number().int().positive().optional(),
+  ),
   stock: z.enum(PRODUCT_STOCK_FILTERS).catch("all").default("all"),
   promo: z.enum(PRODUCT_PROMO_FILTERS).catch("all").default("all"),
   sort: z.enum(PRODUCT_SORTS).catch("newest").default("newest"),
@@ -194,7 +202,12 @@ export type HomepageSection = {
   titleEn: string | null;
   titleAr: string | null;
   type: HomepageSectionType;
-  /** Only read when `type` is `category`. */
+  /**
+   * The category a `category`-type shelf shows. `categoryId` is the source of
+   * truth; `category` is the display name resolved by joining `categories`, so a
+   * rename reflects immediately. Both null when the shelf is not category-typed.
+   */
+  categoryId: number | null;
   category: string | null;
   /** Only read when `type` is `price_under`. */
   maxPrice: number | null;
@@ -236,6 +249,13 @@ const homepageSectionBase = z.object({
   titleEn: z.string().trim().max(120).optional().nullable(),
   titleAr: z.string().trim().max(120).optional().nullable(),
   type: z.enum(HOMEPAGE_SECTION_TYPES),
+  // Relational category for a `category`-type shelf; the admin picker sends it.
+  // Empty string / null -> no category. The legacy `category` name is accepted
+  // for compatibility but the server derives it from categoryId.
+  categoryId: z.preprocess(
+    (value) => (value === "" || value === null || value === undefined ? null : Number(value)),
+    z.number().int().positive().nullable(),
+  ).optional().nullable(),
   category: z.string().trim().max(120).optional().nullable(),
   maxPrice: z.coerce.number().min(0).max(1_000_000).optional().nullable(),
   maxProducts: z.coerce
@@ -273,11 +293,12 @@ const homepageSectionBase = z.object({
  * an error naming the field to fix instead of a silently missing shelf.
  */
 function validateHomepageSectionShape(
-  value: { type: HomepageSectionType; category?: string | null; maxPrice?: number | null },
+  value: { type: HomepageSectionType; categoryId?: number | null; category?: string | null; maxPrice?: number | null },
   ctx: z.RefinementCtx,
 ) {
-  if (value.type === "category" && !value.category?.trim()) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["category"], message: "admin.homepage_error_category_required" });
+  // A category shelf needs a real category id now (the picker sends it).
+  if (value.type === "category" && !(Number(value.categoryId) > 0)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["categoryId"], message: "admin.homepage_error_category_required" });
   }
   if (value.type === "price_under" && !(Number(value.maxPrice) > 0)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["maxPrice"], message: "admin.homepage_error_price_required" });
@@ -336,6 +357,8 @@ export const MESSAGE_STATUS = {
 export type Promo = {
   id: number;
   productName: string | null;
+  /** Relational category; `category` is the joined display name (null = none). */
+  categoryId: number | null;
   category: string | null;
   description: string | null;
   imageUrl: string;
@@ -462,7 +485,12 @@ export const insertProductSchema = z.object({
   name: z.string().min(1, "Nom requis"),
   description: z.string().min(1, "Description requise"),
   imageUrl: z.string().min(1, "Image requise"),
-  category: z.string().min(1, "Catégorie requise"),
+  // The relational category the product belongs to. Required on create; the
+  // server resolves its current name into the legacy `category` text column so
+  // the NOT NULL constraint stays satisfied.
+  categoryId: z.coerce.number().int().positive({ message: "Catégorie requise" }),
+  // Kept optional for compatibility; the server derives it from categoryId.
+  category: z.string().optional().default(""),
   quantity: z.string().optional().default("0"),
   price: z.union([z.string(), z.number()]).optional().default("0"),
   // Promotion, added by migration 0003. Optional throughout: omitting them is
@@ -508,6 +536,12 @@ export const insertMessageSchema = z.object({
 
 export const insertPromoSchema = z.object({
   productName: z.string().optional(),
+  // Relational category (optional — a promo may be uncategorised). The server
+  // derives the legacy `category` name from it.
+  categoryId: z.preprocess(
+    (value) => (value === "" || value === null || value === undefined ? null : Number(value)),
+    z.number().int().positive().nullable(),
+  ).optional().nullable(),
   category: z.string().optional(),
   description: z.string().optional(),
   imageUrl: z.string().min(1, "Image requise"),
@@ -604,7 +638,20 @@ export const productSchema = z.object({
   name: z.string(),
   description: z.string(),
   imageUrl: z.string(),
-  category: z.string(),
+  /**
+   * Reading, not writing: `category` is the joined display name and is null for
+   * an uncategorised row, while `categoryId` is the link itself. Both are
+   * parsed leniently so a row from an old backup (no `category_id` column yet)
+   * still decodes into the current `Product` shape instead of failing the list.
+   */
+  categoryId: z.preprocess(
+    (value) => (value === "" || value === undefined ? null : value),
+    z.number().nullable(),
+  ),
+  category: z.preprocess(
+    (value) => (value === undefined ? null : value),
+    z.union([z.string(), z.null()]),
+  ),
   quantity: z.union([z.string(), z.number()]).transform((val) => {
     if (val === null || val === undefined || val === "") return 0;
     const num = typeof val === "string" ? parseInt(val, 10) : val;
@@ -689,11 +736,17 @@ export const messageSchema: z.ZodType<Message> = z.object({
  */
 export type InsertProduct = Omit<
   z.infer<typeof insertProductSchema>,
-  "promoPrice" | "promoStart" | "promoEnd"
+  "promoPrice" | "promoStart" | "promoEnd" | "categoryId"
 > & {
   promoPrice?: number | string | null;
   promoStart?: string | null;
   promoEnd?: string | null;
+  /**
+   * The relational link. Optional on purpose: a write may carry the id, or
+   * only the legacy text name (demo seeding, older API callers), and storage
+   * resolves either form through the `categories` table.
+   */
+  categoryId?: number | string | null;
 };
 export type InsertMessage = z.infer<typeof insertMessageSchema>;
 export type InsertPromo = z.infer<typeof insertPromoSchema>;

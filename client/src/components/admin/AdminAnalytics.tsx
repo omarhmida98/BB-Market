@@ -476,7 +476,9 @@ export default function AdminAnalytics() {
                         />
                         <div className="min-w-0 flex-1">
                           <div className="font-bold text-sm truncate">{row.name}</div>
-                          <div className="text-xs text-muted-foreground truncate">{row.category}</div>
+                          <div className="text-xs text-muted-foreground truncate">
+                            {row.category === UNKNOWN_CATEGORY_LABEL ? t("analytics.unknown_category") : row.category}
+                          </div>
                         </div>
                         <div className="text-end shrink-0">
                           <div

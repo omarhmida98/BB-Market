@@ -21,7 +21,9 @@
         "db:baseline": "npm run db:baseline -w server",
         "set-password": "npm run set-password -w server",
         "db:reset-data": "npm run db:reset-data -w server",
-    "test:auth": "npm run test:auth -w server"
+    "db:category-report": "npm run db:category-report -w server",
+    "test:auth": "npm run test:auth -w server",
+    "test:category-routes": "npm run test:category-routes -w server"
   },
   "devDependencies": {
     "@types/nodemailer": "^7.0.12",

@@ -40,7 +40,7 @@
  * given.
  */
 import { sql, and, eq, desc, count as drizzleCount } from "drizzle-orm";
-import { db, orders, products, users } from "./db.js";
+import { db, orders, products, users, categories } from "./db.js";
 import { resolveDbTarget } from "./db-target.js";
 import { PRODUCT_LOW_STOCK_THRESHOLD } from "shared/schema.js";
 import { parseOrderItems, formatOrderNumber } from "shared/orders.js";
@@ -361,22 +361,28 @@ async function queryTopProducts(window: AnalyticsWindow): Promise<AnalyticsTopPr
 /**
  * Category rollup, built from the same snapshot expansion as `queryTopProducts`.
  *
- * Lines whose product row no longer exists land in one `__unknown__` bucket
- * instead of being dropped, which keeps category revenue reconcilable with total
- * order revenue rather than quietly losing deleted-product sales.
+ * The bucket is the category *name* resolved through `categories` on the
+ * product's `category_id`, so a rename shows up in the dashboard at once and two
+ * rows never split across a stale text spelling and the current one.
+ *
+ * Two kinds of line land in one `__unknown__` bucket instead of being dropped:
+ * a snapshot whose product row no longer exists, and a product whose category
+ * link is NULL (an unmatched legacy row, or a shelf-level uncategory). Keeping
+ * them in one bucket is what keeps category revenue reconcilable with total
+ * order revenue rather than quietly losing those sales.
  */
 async function queryTopCategories(window: AnalyticsWindow): Promise<AnalyticsCategoryRow[]> {
   const { el, from, where } = snapshotJoin(window);
   const idExpr = jsonNumber(`${el}->>'id'`);
   const qtyExpr = jsonNumber(`${el}->>'quantity'`);
   const priceExpr = jsonNumber(`${el}->>'price'`);
-  const categoryExpr = `COALESCE(p.category, '${UNKNOWN_CATEGORY_LABEL}')`;
+  const categoryExpr = `COALESCE(c.name, '${UNKNOWN_CATEGORY_LABEL}')`;
 
   const rows = await runSnapshotAggregate(
     "top categories",
-    // The `products` join sits between the snapshot join and the WHERE clause:
-    // it has to come after `from` (which ends in the JSON join) and before the
-    // filter, because SQL requires all joins to precede the WHERE.
+    // The joins sit between the snapshot join and the WHERE clause: they have to
+    // come after `from` (which ends in the JSON join) and before the filter,
+    // because SQL requires all joins to precede the WHERE.
     () => `
       SELECT
         ${categoryExpr} AS category,
@@ -384,6 +390,7 @@ async function queryTopCategories(window: AnalyticsWindow): Promise<AnalyticsCat
         SUM(${qtyExpr} * ${priceExpr}) AS revenue
       ${from}
       LEFT JOIN products p ON p.id = ${idExpr}
+      LEFT JOIN categories c ON c.id = p.category_id
       WHERE ${where}
       GROUP BY ${categoryExpr}
       ORDER BY revenue DESC
@@ -564,11 +571,13 @@ async function queryLowStockAlerts(): Promise<AnalyticsStockAlert[]> {
       productId: products.id,
       name: products.name,
       imageUrl: products.imageUrl,
-      category: products.category,
+      // Joined name, so a renamed category is what the dashboard warns about.
+      category: categories.name,
       quantity: products.quantity,
       price: products.price,
     })
     .from(products)
+    .leftJoin(categories, eq(products.categoryId, categories.id))
     .where(and(sql`${products.quantity} > 0`, sql`${products.quantity} <= ${PRODUCT_LOW_STOCK_THRESHOLD}`))
     .orderBy(products.quantity)
     .limit(ANALYTICS_LIMITS.lowStockAlerts);
@@ -577,7 +586,10 @@ async function queryLowStockAlerts(): Promise<AnalyticsStockAlert[]> {
     productId: Math.round(toFiniteNumber(r.productId)),
     name: r.name,
     imageUrl: r.imageUrl,
-    category: r.category,
+    // A product with no category link still belongs on the alert, so it gets the
+    // same sentinel the category rollup uses instead of a null the client would
+    // have to guess about.
+    category: r.category ?? UNKNOWN_CATEGORY_LABEL,
     quantity: Math.round(toFiniteNumber(r.quantity)),
     price: roundMoney(toFiniteNumber(r.price)),
   }));
@@ -648,12 +660,13 @@ export async function explainAnalyticsQueries(window: AnalyticsWindow): Promise<
     ],
     [
       "topCategories",
-      `SELECT COALESCE(p.category, '${UNKNOWN_CATEGORY_LABEL}') AS category,
+      `SELECT COALESCE(c.name, '${UNKNOWN_CATEGORY_LABEL}') AS category,
               SUM(${jsonNumber(`${el}->>'quantity'`)}) AS units_sold
        ${from}
        LEFT JOIN products p ON p.id = ${idExpr}
+       LEFT JOIN categories c ON c.id = p.category_id
        WHERE ${where}
-       GROUP BY COALESCE(p.category, '${UNKNOWN_CATEGORY_LABEL}')`,
+       GROUP BY COALESCE(c.name, '${UNKNOWN_CATEGORY_LABEL}')`,
     ],
   ];
 

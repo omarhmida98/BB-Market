@@ -5,7 +5,7 @@ import { type AppNotification, type NotificationAudience, type NotificationListR
 import { formatOrderNumber } from "shared/orders.js";
 import { toWishlistItem, type WishlistItem, type WishlistListResponse } from "shared/wishlist.js";
 import { normaliseStoredRole } from "./roles.js";
-import { eq, desc, asc, and, sql, count, inArray, notInArray, type SQL } from "drizzle-orm";
+import { eq, desc, asc, and, sql, count, inArray, notInArray, getTableColumns, type SQL } from "drizzle-orm";
 import { resolveDbTarget } from "./db-target.js";
 import { getBestSellingProductIds } from "./analytics.js";
 import { dbg } from "./debug.js";
@@ -76,9 +76,15 @@ export interface IStorage {
   getUserActivities(): Promise<UserActivity[]>;
   getUserActivitiesByUserId(userId: number): Promise<UserActivity[]>;
   getCategories(): Promise<Category[]>;
+  getCategory(id: number): Promise<Category | undefined>;
   createCategory(category: InsertCategory & { slug: string }): Promise<Category>;
   updateCategory(id: number, category: Partial<InsertCategory> & { slug?: string }): Promise<Category | undefined>;
   deleteCategory(id: number): Promise<boolean>;
+  /**
+   * Rows still referencing a category, per table. Used to block a delete with a
+   * message that says what would break and how many of each.
+   */
+  getCategoryUsage(id: number): Promise<CategoryUsage>;
   getOrders(): Promise<Order[]>;
   getOrdersByUserId(userId: number): Promise<Order[]>;
   /**
@@ -191,6 +197,93 @@ function toNullableDate(value: unknown): Date | null {
 }
 
 /**
+ * Thrown when a write names a `category_id` the `categories` table does not
+ * hold. Routes translate this into a 400 rather than letting the foreign key
+ * turn it into an opaque 500 from the driver.
+ */
+export class UnknownCategoryError extends Error {
+  readonly kind = "unknown_category" as const;
+  constructor(readonly categoryId: unknown) {
+    super(`Unknown category id: ${String(categoryId)}`);
+    this.name = "UnknownCategoryError";
+  }
+}
+
+/** How many rows of each kind still point at a category. */
+export type CategoryUsage = { products: number; homepageSections: number; promos: number };
+
+/**
+ * Resolve the category of one write, in either direction.
+ *
+ * The id is the source of truth, so a write that carries one is looked up in
+ * `categories` and its *current* name is returned to be denormalised into the
+ * legacy text column (NOT NULL on `products`, kept for compat elsewhere). An id
+ * that matches nothing is an error rather than a silent NULL, because the write
+ * would then have stored a link no reader can follow.
+ *
+ * A write that carries only the legacy text - an API caller or a test seeding
+ * rows directly - is resolved through `categories` by name, never matched
+ * against the text column of the row being written. A name no category owns is
+ * kept as text but leaves the id NULL, which is exactly what the migration
+ * backfill does with an unmatched legacy row: the report shows it, the UI calls
+ * it uncategorised, and nothing is guessed or auto-created.
+ */
+async function resolveCategoryLink(input: {
+  categoryId?: number | string | null;
+  category?: string | null;
+}): Promise<{ categoryId: number | null; name: string | null }> {
+  const rawId = input.categoryId;
+  const id =
+    rawId === undefined || rawId === null || rawId === "" || (typeof rawId === "number" && Number.isNaN(rawId))
+      ? null
+      : Number(rawId);
+  if (id !== null) {
+    if (!Number.isInteger(id) || id <= 0) throw new UnknownCategoryError(rawId);
+    const [row] = await db
+      .select({ id: categories.id, name: categories.name })
+      .from(categories)
+      .where(eq(categories.id, id))
+      .limit(1);
+    if (!row) throw new UnknownCategoryError(rawId);
+    return { categoryId: row.id, name: row.name };
+  }
+
+  const text = (input.category ?? "").trim();
+  if (!text) return { categoryId: null, name: null };
+  const [row] = await db
+    .select({ id: categories.id, name: categories.name })
+    .from(categories)
+    .where(eq(categories.name, text))
+    .limit(1);
+  return row ? { categoryId: row.id, name: row.name } : { categoryId: null, name: text };
+}
+
+/**
+ * Fold a resolved link back into a write payload, mirroring the id into the
+ * legacy text column so its NOT NULL constraint stays satisfied with the name
+ * the id actually points at today.
+ *
+ * Only called when the caller sent one of the two fields: a patch that mentions
+ * neither must leave both columns alone rather than clearing them.
+ */
+async function withCategoryLink<T extends Record<string, any>>(data: T, options?: { textWhenMissing?: string }): Promise<T> {
+  const hasId = "categoryId" in data && data.categoryId !== undefined;
+  const hasName = "category" in data && data.category !== undefined;
+  if (!hasId && !hasName) return data;
+  const link = await resolveCategoryLink({
+    categoryId: hasId ? data.categoryId : undefined,
+    category: hasName ? data.category : undefined,
+  });
+  return {
+    ...data,
+    categoryId: link.categoryId,
+    // `products.category` is NOT NULL while the other two are nullable, so a
+    // caller that clears its category gets "" there and NULL elsewhere.
+    category: link.name ?? options?.textWhenMissing ?? null,
+  };
+}
+
+/**
  * Build the WHERE clause for a catalogue query.
  *
  * `excludeIds` is not part of the public `ProductQuery`: it exists so a homepage
@@ -201,6 +294,22 @@ function toNullableDate(value: unknown): Date | null {
  * Exported so the load test can assert the plan uses the indexes without
  * having to go through HTTP.
  */
+/**
+ * Every product read selects the product columns plus the category *name*
+ * joined from `categories` on `category_id`. That join is why a category rename
+ * shows up everywhere at once, and why an uncategorised product (null
+ * `category_id`, or a legacy row that matched nothing) resolves to a null name
+ * rather than its stale legacy text. The legacy `products.category` text column
+ * is never surfaced as the display value.
+ */
+function productWithCategory() {
+  return { ...getTableColumns(products), categoryName: categories.name };
+}
+function mapProduct(row: any): Product {
+  const { categoryName, ...rest } = row;
+  return { ...rest, category: categoryName ?? null } as Product;
+}
+
 export function buildProductFilters(query: ProductQuery, excludeIds: number[] = []): SQL[] | undefined {
   const filters: SQL[] = [];
 
@@ -224,8 +333,17 @@ export function buildProductFilters(query: ProductQuery, excludeIds: number[] = 
     filters.push(sql`lower(${products.name}) like ${pattern} escape '\\'`);
   }
 
-  if (query.category) {
-    filters.push(sql`${products.category} = ${query.category}`);
+  // Relational filter is authoritative. The legacy name filter — old shared
+  // links only — is resolved through the `categories` table into an id, so no
+  // query ever matches on `products.category` text. A name no category owns
+  // matches nothing, which is the honest answer: the row that used to carry it
+  // is uncategorised now.
+  if (query.categoryId) {
+    filters.push(sql`${products.categoryId} = ${query.categoryId}`);
+  } else if (query.category) {
+    filters.push(
+      sql`${products.categoryId} in (select id from categories where name = ${query.category})`,
+    );
   }
 
   if (query.stock === "in") {
@@ -351,8 +469,9 @@ export class DatabaseStorage implements IStorage {
     const [totals] = await db.select({ value: count() }).from(products).where(where);
 
     const items = await db
-      .select()
+      .select(productWithCategory())
       .from(products)
+      .leftJoin(categories, eq(products.categoryId, categories.id))
       .where(where)
       .orderBy(...buildProductOrderBy(query.sort))
       .limit(query.limit)
@@ -361,7 +480,7 @@ export class DatabaseStorage implements IStorage {
     const total = Number(totals?.value ?? 0);
 
     return {
-      items: items as unknown as Product[],
+      items: items.map(mapProduct),
       page: query.page,
       limit: query.limit,
       total,
@@ -370,8 +489,14 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getProduct(id: number): Promise<Product | undefined> {
-    const [product] = await db.select().from(products).where(eq(products.id, id));
-    return product;
+    // Joined for the same reason `runProductQuery` joins: the display value is
+    // the category *name*, which a rename changes without touching this row.
+    const [row] = await db
+      .select(productWithCategory())
+      .from(products)
+      .leftJoin(categories, eq(products.categoryId, categories.id))
+      .where(eq(products.id, id));
+    return row ? mapProduct(row) : undefined;
   }
 
   async createMessage(insertMessage: InsertMessage): Promise<Message> {
@@ -431,17 +556,23 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createProduct(insertProduct: InsertProduct): Promise<Product> {
-    const [product] = await db.insert(products).values(this.normaliseProductNumbers(insertProduct as any)).returning();
-    return product as unknown as Product;
+    // The id is resolved first so the legacy text column always carries the
+    // name that id points at today, and an unknown id is rejected before the
+    // row is written rather than by the foreign key after it.
+    const values = await withCategoryLink({ ...(insertProduct as Record<string, any>) }, { textWhenMissing: "" });
+    const [product] = await db.insert(products).values(this.normaliseProductNumbers(values)).returning();
+    return (await this.getProduct(Number((product as any).id))) ?? (product as unknown as Product);
   }
 
   async updateProduct(id: number, update: Partial<InsertProduct>): Promise<Product | undefined> {
+    const values = await withCategoryLink({ ...(update as Record<string, any>) }, { textWhenMissing: "" });
     const [product] = await db
       .update(products)
-      .set(this.normaliseProductNumbers(update as any))
+      .set(this.normaliseProductNumbers(values))
       .where(eq(products.id, id))
       .returning();
-    return product as unknown as Product | undefined;
+    if (!product) return undefined;
+    return (await this.getProduct(id)) ?? (product as unknown as Product);
   }
 
   async deleteProduct(id: number): Promise<boolean> {
@@ -458,18 +589,49 @@ export class DatabaseStorage implements IStorage {
     return product as unknown as Product | undefined;
   }
 
+  /**
+   * The promo read shape: every column plus the category *name* joined from
+   * `categories`, exactly like the product read. The legacy `promos.category`
+   * text is never what the storefront filters or displays.
+   */
+  private promoWithCategory() {
+    return { ...getTableColumns(promos), categoryName: categories.name };
+  }
+
+  private mapPromo(row: any): Promo {
+    const { categoryName, ...rest } = row;
+    return { ...rest, category: categoryName ?? null } as Promo;
+  }
+
+  private async listPromo(id: number): Promise<Promo | undefined> {
+    const [row] = await db
+      .select(this.promoWithCategory())
+      .from(promos)
+      .leftJoin(categories, eq(promos.categoryId, categories.id))
+      .where(eq(promos.id, id));
+    return row ? this.mapPromo(row) : undefined;
+  }
+
   async getPromos(): Promise<Promo[]> {
-    return await db.select().from(promos).orderBy(desc(promos.createdAt));
+    const rows = await db
+      .select(this.promoWithCategory())
+      .from(promos)
+      .leftJoin(categories, eq(promos.categoryId, categories.id))
+      .orderBy(desc(promos.createdAt));
+    return rows.map((row: any) => this.mapPromo(row));
   }
 
   async createPromo(insertPromo: InsertPromo): Promise<Promo> {
-    const [promo] = await db.insert(promos).values(insertPromo).returning();
-    return promo;
+    const values = await withCategoryLink({ ...(insertPromo as Record<string, any>) });
+    const [promo] = await db.insert(promos).values(values as any).returning();
+    return (await this.listPromo(Number((promo as any).id))) ?? this.mapPromo(promo);
   }
 
   async updatePromo(id: number, update: Partial<InsertPromo>): Promise<Promo | undefined> {
-    const [promo] = await db.update(promos).set(update).where(eq(promos.id, id)).returning();
-    return promo;
+    const values = await withCategoryLink({ ...(update as Record<string, any>) });
+    const [promo] = await db.update(promos).set(values as any).where(eq(promos.id, id)).returning();
+    if (!promo) return undefined;
+    return (await this.listPromo(id)) ?? this.mapPromo(promo);
   }
 
   async deletePromo(id: number): Promise<boolean> {
@@ -600,6 +762,11 @@ async updateUserRole(id: number, role: string): Promise<void> {
     return await db.select().from(categories).orderBy(categories.name);
   }
 
+  async getCategory(id: number): Promise<Category | undefined> {
+    const [row] = await db.select().from(categories).where(eq(categories.id, id)).limit(1);
+    return row;
+  }
+
   async createCategory(category: InsertCategory & { slug: string }): Promise<Category> {
     const [created] = await db.insert(categories).values(category).returning();
     return created;
@@ -613,6 +780,35 @@ async updateUserRole(id: number, role: string): Promise<void> {
   async deleteCategory(id: number): Promise<boolean> {
     const result = await db.delete(categories).where(eq(categories.id, id)).returning();
     return result.length > 0;
+  }
+
+  /**
+   * How many rows still point at this category, per table.
+   *
+   * The delete route asks this *before* deleting so it can name the counts in a
+   * message the admin's browser translates. The foreign keys are the real
+   * guarantee (ON DELETE RESTRICT on all three tables); this only turns the
+   * constraint violation into something a person can act on. It is also run
+   * after a failed delete, because the check and the delete are not one
+   * transaction and a row can land in between.
+   */
+  async getCategoryUsage(id: number): Promise<CategoryUsage> {
+    const [productRows, sectionRows, promoRows] = await Promise.all([
+      db.select({ value: count() }).from(products).where(eq(products.categoryId, id)),
+      db.select({ value: count() }).from(homepageSections).where(eq(homepageSections.categoryId, id)),
+      db.select({ value: count() }).from(promos).where(eq(promos.categoryId, id)),
+    ]);
+    return {
+      products: Number(productRows[0]?.value ?? 0),
+      homepageSections: Number(sectionRows[0]?.value ?? 0),
+      promos: Number(promoRows[0]?.value ?? 0),
+    };
+  }
+
+  /** True when nothing references the category any more. */
+  async isCategoryUnused(id: number): Promise<boolean> {
+    const usage = await this.getCategoryUsage(id);
+    return usage.products === 0 && usage.homepageSections === 0 && usage.promos === 0;
   }
 
   /** Money columns are TEXT and fulfillment is a plain string in the DB. */
@@ -907,7 +1103,11 @@ async updateUserRole(id: number, role: string): Promise<void> {
         // Ascending stock, so the products closest to running out lead the shelf.
         return productQuerySchema.parse({ limit, stock: "low", sort: "stock_asc" });
       case "category":
-        return productQuerySchema.parse({ limit, category: section.category ?? "", sort: "newest" });
+        // By id, never by the shelf's text column: a rename has to move the
+        // shelf with its category. `queryHomepageSectionProducts` returns an
+        // empty shelf when the id is missing, so an uncategorised legacy row
+        // cannot degrade into "every product".
+        return productQuerySchema.parse({ limit, categoryId: section.categoryId ?? undefined, sort: "newest" });
       case "price_under":
         return productQuerySchema.parse({ limit, maxPrice: Number(section.maxPrice) || undefined, sort: "price_asc" });
       case "newest":
@@ -919,6 +1119,10 @@ async updateUserRole(id: number, role: string): Promise<void> {
 
   async queryHomepageSectionProducts(section: HomepageSection, excludeIds: number[] = []): Promise<Product[]> {
     const limit = this.clampSectionLimit(section.maxProducts);
+
+    // A category shelf with no resolvable category would otherwise fall through
+    // to an unfiltered query and show the whole catalogue.
+    if (section.type === "category" && !(Number(section.categoryId) > 0)) return [];
 
     if (section.type === "best_sellers") {
       const ids = await getBestSellingProductIds(limit, excludeIds);
@@ -988,6 +1192,21 @@ async updateUserRole(id: number, role: string): Promise<void> {
   }
 
   /**
+   * The shelf read shape: every column plus the category *name* joined from
+   * `categories`, so a rename shows up in the admin list and on the homepage
+   * without rewriting the shelf. The legacy `homepage_sections.category` text is
+   * never the display value.
+   */
+  private sectionWithCategory() {
+    return { ...getTableColumns(homepageSections), categoryName: categories.name };
+  }
+
+  private toSectionWithCategory(row: any): HomepageSection {
+    const { categoryName, ...rest } = row;
+    return { ...this.toHomepageSection(rest), category: categoryName ?? null };
+  }
+
+  /**
    * Normalise a write the same way every other table in this file is normalised.
    *
    * The admin form sends "" for a cleared text input and "" for an emptied
@@ -1036,33 +1255,41 @@ async updateUserRole(id: number, role: string): Promise<void> {
 
   async getHomepageSections(includeDisabled = false): Promise<HomepageSection[]> {
     const rows = await db
-      .select()
+      .select(this.sectionWithCategory())
       .from(homepageSections)
+      .leftJoin(categories, eq(homepageSections.categoryId, categories.id))
       .where(includeDisabled ? undefined : eq(homepageSections.enabled, true))
       .orderBy(asc(homepageSections.displayOrder), asc(homepageSections.id));
-    return rows.map((row: any) => this.toHomepageSection(row));
+    return rows.map((row: any) => this.toSectionWithCategory(row));
   }
 
   async getHomepageSection(id: number): Promise<HomepageSection | undefined> {
-    const [row] = await db.select().from(homepageSections).where(eq(homepageSections.id, id));
-    return row ? this.toHomepageSection(row) : undefined;
+    const [row] = await db
+      .select(this.sectionWithCategory())
+      .from(homepageSections)
+      .leftJoin(categories, eq(homepageSections.categoryId, categories.id))
+      .where(eq(homepageSections.id, id));
+    return row ? this.toSectionWithCategory(row) : undefined;
   }
 
   async createHomepageSection(section: HomepageSectionInput): Promise<HomepageSection> {
+    const values = await withCategoryLink({ ...(section as Record<string, any>) });
     const [created] = await db
       .insert(homepageSections)
-      .values(this.normaliseHomepageSection(section as Record<string, any>))
+      .values(this.normaliseHomepageSection(values))
       .returning();
-    return this.toHomepageSection(created);
+    return (await this.getHomepageSection(Number(created.id))) ?? this.toSectionWithCategory(created);
   }
 
   async updateHomepageSection(id: number, patch: HomepageSectionPatch): Promise<HomepageSection | undefined> {
+    const values = await withCategoryLink({ ...(patch as Record<string, any>) });
     const [updated] = await db
       .update(homepageSections)
-      .set({ ...this.normaliseHomepageSection(patch as Record<string, any>), updatedAt: new Date() })
+      .set({ ...this.normaliseHomepageSection(values), updatedAt: new Date() })
       .where(eq(homepageSections.id, id))
       .returning();
-    return updated ? this.toHomepageSection(updated) : undefined;
+    if (!updated) return undefined;
+    return (await this.getHomepageSection(id)) ?? this.toSectionWithCategory(updated);
   }
 
   async deleteHomepageSection(id: number): Promise<boolean> {

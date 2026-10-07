@@ -151,16 +151,31 @@ async function seed(): Promise<Seed> {
     users.map((u) => [u[0], idOf(db, "select id from users where username = ?", u[0])]),
   ) as Record<string, number>;
 
-  const insertProduct = db.prepare(
-    "insert into products (name, description, image_url, category, quantity, price) values (?,?,?,?,?,?)",
+  // A product is only attributed to a category through `categories.id`, so the
+  // fixture owns the rows its products link to - exactly what the backfill would
+  // have matched by name. The insert passes the name twice: once for the legacy
+  // text column, once for the subquery that resolves the id.
+  const insertCategory = db.prepare("insert into categories (name, slug) values (?,?)");
+  for (const name of ["Emballage", "Patisserie", "Maison"]) insertCategory.run(name, name.toLowerCase());
+  const runProduct = db.prepare(
+    "insert into products (name, description, image_url, category, category_id, quantity, price)" +
+      " values (?,?,?,?,(select id from categories where categories.name = ?),?,?)",
   );
+  const insertProduct = (
+    name: string,
+    description: string,
+    imageUrl: string,
+    category: string,
+    quantity: number,
+    price: number,
+  ) => runProduct.run(name, description, imageUrl, category, category, quantity, price);
   // Stock levels chosen to straddle PRODUCT_LOW_STOCK_THRESHOLD (5): in stock,
   // exactly at the threshold, and sold out. The "6 units" product must NOT count
   // as low stock, which is the off-by-one the threshold rule is most likely to get.
-  insertProduct.run("Boite Solide", "d", "/box.png", "Emballage", 20, 50);
-  insertProduct.run("Ruban Or", "d", "/ribbon.png", "Emballage", 2, 10);
-  insertProduct.run("Gateau Fin", "d", "/cake.png", "Patisserie", 0, 80);
-  insertProduct.run("Lampadaire", "d", "/lamp.png", "Maison", 6, 200);
+  insertProduct("Boite Solide", "d", "/box.png", "Emballage", 20, 50);
+  insertProduct("Ruban Or", "d", "/ribbon.png", "Emballage", 2, 10);
+  insertProduct("Gateau Fin", "d", "/cake.png", "Patisserie", 0, 80);
+  insertProduct("Lampadaire", "d", "/lamp.png", "Maison", 6, 200);
   const productIds = {
     box: idOf(db, "select id from products where name = ?", "Boite Solide"),
     ribbon: idOf(db, "select id from products where name = ?", "Ruban Or"),
@@ -246,7 +261,7 @@ async function seed(): Promise<Seed> {
   // A product that will be deleted after insertion, so its snapshot line has no
   // product row to join. Its category revenue must land in the unknown bucket
   // rather than vanish.
-  insertProduct.run("Produit Supprime", "d", "/gone.png", "Emballage", 4, 25);
+  insertProduct("Produit Supprime", "d", "/gone.png", "Emballage", 4, 25);
   const deletedProductId = idOf(db, "select id from products where name = ?", "Produit Supprime");
   insertOrder.run(
     userIds.cust_one, "One", "cust_one@example.test", "+21600000003", "Tunis",

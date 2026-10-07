@@ -5,10 +5,10 @@ import type { Server } from "http";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-import { storage } from "./storage.js";
+import { storage, UnknownCategoryError } from "./storage.js";
 import { api } from "shared/routes.js";
 import { z } from "zod";
-import { insertCategorySchema, insertOrderSchema, upsertSocialMediaEmbedSchema, insertSettingsSchema, computeDeliveryFee, SOCIAL_PLATFORMS, productQuerySchema, checkPromotion, homepageSectionInputSchema, homepageSectionPatchSchema, HOMEPAGE_TILE_IMAGE_MAX_BYTES, HOMEPAGE_TILE_IMAGE_MIME_TYPES, HOMEPAGE_TILE_IMAGE_EXTENSIONS, type SocialPlatform } from "shared/schema.js";
+import { insertCategorySchema, insertOrderSchema, upsertSocialMediaEmbedSchema, insertSettingsSchema, insertPromoSchema, computeDeliveryFee, SOCIAL_PLATFORMS, productQuerySchema, checkPromotion, homepageSectionInputSchema, homepageSectionPatchSchema, HOMEPAGE_TILE_IMAGE_MAX_BYTES, HOMEPAGE_TILE_IMAGE_MIME_TYPES, HOMEPAGE_TILE_IMAGE_EXTENSIONS, type SocialPlatform } from "shared/schema.js";
 import { resolvePromotion } from "shared/promotions.js";
 import { dbg } from "./debug.js";
 import { toCustomerOrder, toCustomerOrderSummary } from "shared/orders.js";
@@ -201,14 +201,59 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-app.delete("/api/categories/:id", async (req, res) => {
+  /**
+   * Deleting a category is refused while anything still points at it.
+   *
+   * The foreign keys already say no (ON DELETE RESTRICT on products,
+   * homepage_sections and promos), but a bare constraint violation is a driver
+   * error the admin cannot act on. So the counts are read first and returned as
+   * data - never as a sentence - and the browser renders the message in its own
+   * language with `admin.category_delete_blocked_*`.
+   *
+   * `code` rather than `message` is deliberate: the server cannot know whether
+   * the next admin reads French, English or Arabic.
+   */
+  app.delete("/api/categories/:id", async (req, res) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
     const currentUser = req.user as any;
     if (!["admin", "superadmin"].includes(currentUser.role)) return res.sendStatus(403);
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: "Invalid category ID" });
-    const success = await storage.deleteCategory(id);
-    return success ? res.sendStatus(204) : res.status(404);
+    try {
+      const exists = await storage.getCategory(id);
+      if (!exists) return res.status(404).json({ message: "Category not found" });
+
+      const usage = await storage.getCategoryUsage(id);
+      const inUse = usage.products > 0 || usage.homepageSections > 0 || usage.promos > 0;
+      if (inUse) return res.status(409).json({ code: "category_in_use", counts: usage });
+
+      const success = await storage.deleteCategory(id);
+      if (!success) {
+        // Lost the race to a concurrent reference: report it the same way a
+        // caught violation would be reported, rather than a bare 404.
+        const raced = await storage.getCategoryUsage(id);
+        if (raced.products > 0 || raced.homepageSections > 0 || raced.promos > 0) {
+          return res.status(409).json({ code: "category_in_use", counts: raced });
+        }
+        return res.status(404).json({ message: "Category not found" });
+      }
+      await storage.createUserActivity(currentUser.id, "category_delete", `Catégorie supprimée (ID: ${id})`);
+      return res.sendStatus(204);
+    } catch (error) {
+      // The RESTRICT constraint is the backstop for whatever the counts missed
+      // (a reference written between the check and the delete). Driver error
+      // messages differ per database, so this is re-reported as data too.
+      console.error("[CATEGORIES] delete failed:", error);
+      try {
+        const usage = await storage.getCategoryUsage(id);
+        if (usage.products > 0 || usage.homepageSections > 0 || usage.promos > 0) {
+          return res.status(409).json({ code: "category_in_use", counts: usage });
+        }
+      } catch {
+        // fall through to the generic failure below
+      }
+      return res.status(500).json({ message: "Unable to delete category" });
+    }
   });
 
   // Homepage sections
@@ -273,6 +318,9 @@ app.delete("/api/categories/:id", async (req, res) => {
       await storage.createUserActivity(currentUser.id, "homepage_section_create", section.titleFr);
       res.status(201).json(section);
     } catch (error: any) {
+      if (error instanceof UnknownCategoryError) {
+        return res.status(400).json({ message: "admin.error_category_unknown" });
+      }
       res.status(400).json({ message: error?.issues?.[0]?.message || error?.message || "Unable to create section" });
     }
   });
@@ -303,6 +351,9 @@ app.delete("/api/categories/:id", async (req, res) => {
       await storage.createUserActivity(currentUser.id, "homepage_section_update", section.titleFr);
       res.json(section);
     } catch (error: any) {
+      if (error instanceof UnknownCategoryError) {
+        return res.status(400).json({ message: "admin.error_category_unknown" });
+      }
       res.status(400).json({ message: error?.issues?.[0]?.message || error?.message || "Unable to update section" });
     }
   });
@@ -1109,7 +1160,7 @@ app.delete("/api/categories/:id", async (req, res) => {
                   if (newQuantity <= 10) {
                     await sendStockAlertEmail(
                       product.name,
-                      product.category,
+                      product.category ?? "",
                       newQuantity,
                       10
                     );
@@ -1276,6 +1327,10 @@ app.delete("/api/categories/:id", async (req, res) => {
       const productData = {
         name: req.body.name,
         description: req.body.description,
+        // The relational category. A caller may still send the legacy text name
+        // instead; storage resolves either form through the `categories` table
+        // and stores both the id and the name that id points at today.
+        categoryId: req.body.categoryId,
         category: req.body.category,
         quantity: req.body.quantity || "10",
         price: req.body.price || "0",
@@ -1288,7 +1343,7 @@ app.delete("/api/categories/:id", async (req, res) => {
         imageUrl
       };
 
-      if (!productData.name || !productData.description || !productData.category) {
+      if (!productData.name || !productData.description || (!productData.categoryId && !productData.category)) {
         return res.status(400).json({ message: "All fields are required" });
       }
 
@@ -1296,6 +1351,9 @@ app.delete("/api/categories/:id", async (req, res) => {
       await storage.createUserActivity(currentUser.id, "product_create", `Produit créé: ${product.name}`);
       res.status(201).json(product);
     } catch (err) {
+      if (err instanceof UnknownCategoryError) {
+        return res.status(400).json({ message: "admin.error_category_unknown" });
+      }
       console.error(err);
       res.status(500).json({ message: "Internal server error" });
     }
@@ -1329,7 +1387,7 @@ app.delete("/api/categories/:id", async (req, res) => {
       // Forwarding the raw body meant a caller could set `id`, `createdAt`, or
       // anything else the client invented, and there was no validation at all.
       const patch: Record<string, unknown> = {};
-      for (const field of ["name", "description", "category", "imageUrl", "quantity", "price"]) {
+      for (const field of ["name", "description", "categoryId", "category", "imageUrl", "quantity", "price"]) {
         if (req.body[field] !== undefined) patch[field] = req.body[field];
       }
 
@@ -1380,6 +1438,9 @@ app.delete("/api/categories/:id", async (req, res) => {
       await storage.createUserActivity(currentUser.id, "product_update", `Produit modifié: ${product.name}`);
       res.json(product);
     } catch (err) {
+      if (err instanceof UnknownCategoryError) {
+        return res.status(400).json({ message: "admin.error_category_unknown" });
+      }
       console.error("[PRODUCTS] Product update failed:", err);
       res.status(500).json({ message: "Internal server error" });
     }
@@ -1411,7 +1472,7 @@ app.delete("/api/categories/:id", async (req, res) => {
         : product.quantity || 0;
 
       if (currentQuantity <= 10) {
-        await sendStockAlertEmail(product.name, product.category, currentQuantity, 10);
+        await sendStockAlertEmail(product.name, product.category ?? "", currentQuantity, 10);
         if (currentQuantity === 0) {
           await storage.createUserActivity(currentUser.id, "out_of_stock", `🚨 ${product.name} est en Repture de stock!`);
         } else {
@@ -1477,14 +1538,20 @@ app.delete("/api/categories/:id", async (req, res) => {
 
       const promoData = {
         productName: req.body.productName,
+        // Relational first; the legacy text is accepted too and resolved through
+        // the `categories` table by storage.
+        categoryId: req.body.categoryId,
         category: req.body.category,
         description: req.body.description,
         imageUrl
       };
 
-      const promo = await storage.createPromo(promoData);
+      const promo = await storage.createPromo(promoData as any);
       res.status(201).json(promo);
     } catch (err) {
+      if (err instanceof UnknownCategoryError) {
+        return res.status(400).json({ message: "admin.error_category_unknown" });
+      }
       console.error(err);
       res.status(500).json({ message: "Internal server error" });
     }
@@ -1511,10 +1578,20 @@ app.delete("/api/categories/:id", async (req, res) => {
     if (isNaN(id)) return res.status(400).json({ message: "Invalid ID" });
 
     try {
-      const promo = await storage.updatePromo(id, req.body);
+      // Parsed rather than forwarded: `req.body` also carries `id`,
+      // `createdAt` and anything else a caller invents, and the previous raw
+      // pass-through let it overwrite them.
+      const patch = insertPromoSchema.partial().parse(req.body);
+      const promo = await storage.updatePromo(id, patch);
       if (!promo) return res.status(404).json({ message: "Promo not found" });
       res.json(promo);
     } catch (err) {
+      if (err instanceof UnknownCategoryError) {
+        return res.status(400).json({ message: "admin.error_category_unknown" });
+      }
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({ message: err.issues[0]?.message ?? "Invalid promo" });
+      }
       res.status(500).json({ message: "Internal server error" });
     }
   });

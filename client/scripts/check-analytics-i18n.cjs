@@ -89,6 +89,10 @@ const DYNAMIC = [
       (e) => `admin.homepage_error_${e}`,
     ),
   ],
+  // Errors the *server* hands back as a key for the client to translate (it
+  // cannot know the reader's language), so no literal t() call names them:
+  // apiErrorMessage resolves whatever message arrives through i18n.exists().
+  ["admin.error_", ["category_unknown"].map((e) => `admin.error_${e}`)],
   // The login page's feature cards keep their keys in a table
   // (`t(feature.titleKey)`), so they are invisible to the literal scan too -
   // which is how they once shipped missing from every locale.

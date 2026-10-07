@@ -155,16 +155,32 @@ async function seed() {
     users.map((u) => [u[0], idOf(db, "select id from users where username = ?", u[0])]),
   ) as Record<string, number>;
 
-  const insertProduct = db.prepare(
-    "insert into products (name, description, image_url, category, quantity, price) values (?,?,?,?,?,?)",
+  // The wishlist renders `product.category` from the joined `categories.name`, so
+  // the fixture owns the categories its products link to by id (the legacy text
+  // column alone would read back as uncategorised). The insert passes the name
+  // twice: once for the text column, once for the subquery resolving the id.
+  const insertCategory = db.prepare("insert into categories (name, slug) values (?,?)");
+  const usedCategories = ["Emballage", "Mariage", "Patisserie", "Nouveautes", "Ramadan"];
+  for (const name of usedCategories) insertCategory.run(name, name.toLowerCase());
+  const runProduct = db.prepare(
+    "insert into products (name, description, image_url, category, category_id, quantity, price)" +
+      " values (?,?,?,?,(select id from categories where categories.name = ?),?,?)",
   );
+  const insertProduct = (
+    name: string,
+    description: string,
+    imageUrl: string,
+    category: string,
+    quantity: number,
+    price: number,
+  ) => runProduct.run(name, description, imageUrl, category, category, quantity, price);
   // Plain, in stock, no promotion. The baseline every other case is compared to.
-  insertProduct.run("Boite Cadeaux", "d", "/plain.png", "Emballage", 20, 60);
+  insertProduct("Boite Cadeaux", "d", "/plain.png", "Emballage", 20, 60);
   const plainId = idOf(db, "select id from products where name = ?", "Boite Cadeaux");
 
   // Promotion live right now (a wide window around 2020), so resolvePromotion
   // reports `active` and the wishlist must show the discounted price.
-  insertProduct.run("Pack Promo", "d", "/promo.png", "Mariage", 8, 120);
+  insertProduct("Pack Promo", "d", "/promo.png", "Mariage", 8, 120);
   const promoId = idOf(db, "select id from products where name = ?", "Pack Promo");
   db.prepare("update products set promo_price = ?, promo_start = ?, promo_end = ? where id = ?").run(
     90,
@@ -179,16 +195,16 @@ async function seed() {
 
   // Sold out: still favourited, still listed, and must be marked not-in-stock
   // rather than dropped from the page.
-  insertProduct.run("Rupture", "d", "/out.png", "Patisserie", 0, 35);
+  insertProduct("Rupture", "d", "/out.png", "Patisserie", 0, 35);
   const outOfStockId = idOf(db, "select id from products where name = ?", "Rupture");
 
   // Just above the shared low-stock cutoff, so the `lowStock` flag can be told
   // apart from "out of stock" rather than both being plain false.
-  insertProduct.run("Derniere Unite", "d", "/low.png", "Nouveautes", 5, 45);
+  insertProduct("Derniere Unite", "d", "/low.png", "Nouveautes", 5, 45);
   const lowStockId = idOf(db, "select id from products where name = ?", "Derniere Unite");
 
   // Only ever favourited by B. A is not allowed to see it, or remove it.
-  insertProduct.run("Chemin de Bob", "d", "/bob.png", "Ramadan", 3, 25);
+  insertProduct("Chemin de Bob", "d", "/bob.png", "Ramadan", 3, 25);
   const bobOnlyId = idOf(db, "select id from products where name = ?", "Chemin de Bob");
   db.prepare("insert into wishlist (user_id, product_id) values (?,?)").run(userIds.cust_b, bobOnlyId);
 

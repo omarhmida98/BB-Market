@@ -156,6 +156,7 @@
     "search_placeholder": "Name, description...",
     "category": "Category",
     "all_categories": "All categories",
+    "uncategorized": "Uncategorized",
     "active_filters": "Active filters",
     "clear_all": "Clear all",
     "no_products": "No products match your search.",
@@ -810,7 +811,16 @@
     "save_failed": "Failed to save",
     "whatsapp_order_message": "Hello {{name}}, regarding your B&B Market order #{{id}} ({{total}}).",
     "social_link_saved_desc": "The link is now shown on the site.",
-    "social_link_removed_desc": "No link will be shown for this platform."
+    "social_link_removed_desc": "No link will be shown for this platform.",
+    "error_category_unknown": "That category no longer exists. Reload the page and pick another one.",
+    "category_delete_blocked_title": "Category still in use",
+    "category_delete_blocked_products_one": "{{count}} product",
+    "category_delete_blocked_products_other": "{{count}} products",
+    "category_delete_blocked_sections_one": "{{count}} homepage section",
+    "category_delete_blocked_sections_other": "{{count}} homepage sections",
+    "category_delete_blocked_promos_one": "{{count}} promotion",
+    "category_delete_blocked_promos_other": "{{count}} promotions",
+    "category_delete_blocked_hint": "Reassign them before deleting the category."
   },
   "camera": {
     "capture_alt": "Capture",

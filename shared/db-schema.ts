@@ -10,6 +10,11 @@ export const pgProducts = pgTable("products", {
   description: pgText("description").notNull(),
   imageUrl: pgText("image_url").notNull(),
   category: pgText("category").notNull(),
+  // Relational category (migration 0010 on PostgreSQL / 0009 on SQLite). This FK
+  // is the source of truth: filtering and display go through it. The text
+  // `category` column above is kept only for backfill/compat and is NOT read as
+  // truth. ON DELETE RESTRICT so a category in use cannot be removed.
+  categoryId: pgInteger("category_id").references(() => pgCategories.id, { onDelete: "restrict" }),
   // price/quantity were `text` until migration 0002. They are numbers now so the
   // catalogue can be sorted and filtered in SQL: on PostgreSQL `text > integer`
   // is an operator error, and on both dialects a text column sorts
@@ -46,6 +51,8 @@ export const pgProducts = pgTable("products", {
   index("idx_products_created_at").on(t.createdAt, t.id),
   // Category filter. Selective, and used on its own or combined with a sort.
   index("idx_products_category").on(t.category),
+  // Relational category filter (the one the app uses now).
+  index("idx_products_category_id").on(t.categoryId),
   // Price sort (low -> high / high -> low) without a filesort.
   index("idx_products_price").on(t.price),
   // Stock filter and the admin "sort by stock".
@@ -89,6 +96,8 @@ export const pgPromos = pgTable("promos", {
   id: serial("id").primaryKey(),
   productName: pgText("product_name"),
   category: pgText("category"),
+  // Relational category for the promo filter. ON DELETE RESTRICT.
+  categoryId: pgInteger("category_id").references(() => pgCategories.id, { onDelete: "restrict" }),
   description: pgText("description"),
   imageUrl: pgText("image_url").notNull(),
   createdAt: pgTimestamp("created_at").defaultNow(),
@@ -264,6 +273,8 @@ export const pgHomepageSections = pgTable("homepage_sections", {
   titleAr: pgText("title_ar"),
   type: pgText("type").notNull().default("newest"),
   category: pgText("category"),
+  // Relational category for a `category`-type shelf. ON DELETE RESTRICT.
+  categoryId: pgInteger("category_id").references(() => pgCategories.id, { onDelete: "restrict" }),
   maxPrice: pgDoublePrecision("max_price"),
   maxProducts: pgInteger("max_products").notNull().default(10),
   displayOrder: pgInteger("display_order").notNull().default(0),
@@ -314,6 +325,8 @@ export const sqliteProducts = sqliteTable("products", {
   description: sqliteText("description").notNull(),
   imageUrl: sqliteText("image_url").notNull(),
   category: sqliteText("category").notNull(),
+  // See pgProducts. Relational category FK, the source of truth.
+  categoryId: integer("category_id").references(() => sqliteCategories.id, { onDelete: "restrict" }),
   // See pgProducts: both dialects are kept logically identical on purpose.
   quantity: integer("quantity").notNull().default(0),
   price: real("price").notNull().default(0),
@@ -328,6 +341,7 @@ export const sqliteProducts = sqliteTable("products", {
   // names so a query plan can be compared across the two dialects.
   sqliteIndex("idx_products_created_at").on(t.createdAt, t.id),
   sqliteIndex("idx_products_category").on(t.category),
+  sqliteIndex("idx_products_category_id").on(t.categoryId),
   sqliteIndex("idx_products_price").on(t.price),
   sqliteIndex("idx_products_quantity").on(t.quantity),
   sqliteIndex("idx_products_promoted").on(t.id).where(sql`${t.promoPrice} is not null`),
@@ -365,6 +379,7 @@ export const sqlitePromos = sqliteTable("promos", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   productName: sqliteText("product_name"),
   category: sqliteText("category"),
+  categoryId: integer("category_id").references(() => sqliteCategories.id, { onDelete: "restrict" }),
   description: sqliteText("description"),
   imageUrl: sqliteText("image_url").notNull(),
   createdAt: integer("created_at", { mode: 'timestamp' }).default(sql`(strftime('%s', 'now'))`),
@@ -496,6 +511,7 @@ export const sqliteHomepageSections = sqliteTable("homepage_sections", {
   titleAr: sqliteText("title_ar"),
   type: sqliteText("type").notNull().default("newest"),
   category: sqliteText("category"),
+  categoryId: integer("category_id").references(() => sqliteCategories.id, { onDelete: "restrict" }),
   maxPrice: real("max_price"),
   maxProducts: integer("max_products").notNull().default(10),
   displayOrder: integer("display_order").notNull().default(0),

@@ -16,9 +16,9 @@ import { Label } from "@/components/ui/label";
 import { useTranslation } from "react-i18next";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { SiteBackground } from "@/components/SiteBackground";
+import { useCategories } from "@/hooks/use-categories";
 import { useLocation } from "wouter";
 import {
-  PRODUCT_CATEGORIES,
   PRODUCT_DEFAULT_LIMIT,
   type ProductPromoFilter,
   type ProductSort,
@@ -40,6 +40,13 @@ const PUBLIC_PROMO: ProductPromoFilter[] = ["all", "active"];
 type UrlState = {
   page: number;
   search: string;
+  /** Relational filter — the one the app writes and reads. */
+  categoryId: number | null;
+  /**
+   * Legacy `?category=<name>` param, kept only so an old shared link still
+   * parses. It is resolved to an id against the categories table and never
+   * written back once it has been.
+   */
   category: string;
   stock: ProductStockFilter;
   promo: ProductPromoFilter;
@@ -49,6 +56,7 @@ type UrlState = {
 const DEFAULT_STATE: UrlState = {
   page: 1,
   search: "",
+  categoryId: null,
   category: "",
   stock: "all",
   promo: "all",
@@ -61,12 +69,16 @@ function readUrlState(search: string): UrlState {
   const sort = p.get("sort") as ProductSort | null;
   const stock = p.get("stock") as ProductStockFilter | null;
   const promo = p.get("promo") as ProductPromoFilter | null;
+  const rawCategoryId = Number(p.get("categoryId"));
   return {
     page: Number.isInteger(page) && page > 0 ? page : 1,
     search: p.get("search") ?? "",
-    // A category is only offered from the list below, so anything else in the URL
-    // is ignored rather than sent to the server.
-    category: PRODUCT_CATEGORIES.includes(p.get("category") as any) ? (p.get("category") as string) : "",
+    // Not validated against the list: categories are dynamic, and a value whose
+    // category has since been deleted simply matches no products.
+    categoryId: Number.isInteger(rawCategoryId) && rawCategoryId > 0 ? rawCategoryId : null,
+    // Legacy bookmark. Resolved once the categories are loaded; an unknown name
+    // (deleted category left in an old link) matches no products.
+    category: p.get("category") ?? "",
     stock: stock && PUBLIC_STOCK.includes(stock) ? stock : "all",
     // The homepage "see all promotions" link lands on ?promo=active; unknown
     // values fall back to "all" rather than erroring the page.
@@ -79,7 +91,8 @@ function toQueryString(state: UrlState): string {
   const p = new URLSearchParams();
   if (state.page > 1) p.set("page", String(state.page));
   if (state.search) p.set("search", state.search);
-  if (state.category) p.set("category", state.category);
+  if (state.categoryId) p.set("categoryId", String(state.categoryId));
+  else if (state.category) p.set("category", state.category);
   if (state.stock !== "all") p.set("stock", state.stock);
   if (state.promo !== "all") p.set("promo", state.promo);
   if (state.sort !== "newest") p.set("sort", state.sort);
@@ -91,6 +104,10 @@ export default function Products() {
   const { t } = useTranslation();
   const [location, setLocation] = useLocation();
   const [state, setState] = useState<UrlState>(() => readUrlState(window.location.search));
+  // Real categories from the database (same source as the admin). Empty until
+  // loaded and empty when the shop has none, in which case only the
+  // "all categories" option is offered.
+  const { categories, activeCategories } = useCategories();
 
   // The text box is debounced separately from the query so typing does not fire
   // a request per keystroke, while the visible input stays responsive.
@@ -123,11 +140,31 @@ export default function Products() {
     });
   };
 
+  // A legacy ?category=<name> link is turned into the id it points at, against
+  // the same table the server matches it on. Until the list arrives this is
+  // null and the request goes out with the name instead, which the server
+  // resolves — so one slow request is the only cost of the old bookmark.
+  const resolvedLegacyId = useMemo(() => {
+    if (state.categoryId || !state.category) return null;
+    const match = categories.find((category) => category.name === state.category);
+    return match ? match.id : null;
+  }, [state.categoryId, state.category, categories]);
+
+  const activeCategoryId = state.categoryId ?? resolvedLegacyId;
+
+  // Labels come from the whole list, not just the active one: an inactive
+  // category still exists and still names its products correctly.
+  const categoryName = (id: number | null): string =>
+    (id !== null && categories.find((category) => category.id === id)?.name) || "";
+
   const { data, isLoading, isError, isFetching, refetch } = useProducts({
     page: state.page,
     limit: PRODUCT_DEFAULT_LIMIT,
     search: state.search,
-    category: state.category,
+    // One or the other: an id makes the name redundant, and a name that never
+    // resolved keeps filtering through the server's categories lookup.
+    categoryId: activeCategoryId ?? undefined,
+    category: activeCategoryId ? "" : state.category,
     stock: state.stock,
     promo: state.promo,
     sort: state.sort,
@@ -146,7 +183,7 @@ export default function Products() {
   }, [isLoading, totalPages, state.page]);
 
   const hasFilters = Boolean(
-    state.search || state.category || state.stock !== "all" || state.promo !== "all" || state.sort !== "newest",
+    state.search || activeCategoryId || state.category || state.stock !== "all" || state.promo !== "all" || state.sort !== "newest",
   );
 
   const clearFilters = () => {
@@ -221,15 +258,29 @@ export default function Products() {
             {/* Category */}
             <div className="space-y-2">
               <Label className="text-xs font-bold text-slate-400 uppercase tracking-wider ms-1">{t("products.category")}</Label>
-              <Select value={state.category || "all"} onValueChange={(val) => update({ category: val === "all" ? "" : val })}>
+              <Select
+                value={activeCategoryId ? String(activeCategoryId) : "all"}
+                onValueChange={(val) =>
+                  update({ categoryId: val === "all" ? null : Number(val), category: "" })
+                }
+              >
                 <SelectTrigger className="w-full h-11 rounded-xl border-slate-200 dark:border-slate-700 dark:bg-slate-950/40 bg-white/50 backdrop-blur-sm text-sm font-medium focus:ring-primary/30 focus:border-primary transition-all hover:bg-white/80 dark:hover:bg-slate-900/80">
                   <SelectValue placeholder={t("products.all_categories")} />
                 </SelectTrigger>
                 <SelectContent side="bottom" avoidCollisions={false} sideOffset={4} className="rounded-2xl bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-slate-200/50 dark:border-slate-700/50 shadow-2xl">
                   <SelectItem value="all" className="rounded-xl focus:bg-primary focus:text-white transition-colors cursor-pointer">{t("products.all_categories")}</SelectItem>
-                  {PRODUCT_CATEGORIES.map(cat => (
-                    <SelectItem key={cat} value={cat} className="rounded-xl focus:bg-primary focus:text-white transition-colors cursor-pointer">{cat}</SelectItem>
+                  {activeCategories.map(cat => (
+                    <SelectItem key={cat.id} value={String(cat.id)} className="rounded-xl focus:bg-primary focus:text-white transition-colors cursor-pointer">{cat.name}</SelectItem>
                   ))}
+                  {/* The filtered category is not always one the shop still
+                      offers (inactive, or a link to a deleted one). It gets its
+                      own item so the trigger keeps naming what is being filtered
+                      instead of silently falling back to "all categories". */}
+                  {activeCategoryId !== null && !activeCategories.some(cat => cat.id === activeCategoryId) && (
+                    <SelectItem value={String(activeCategoryId)} className="rounded-xl focus:bg-primary focus:text-white transition-colors cursor-pointer">
+                      {categoryName(activeCategoryId) || state.category || t("products.uncategorized")}
+                    </SelectItem>
+                  )}
                 </SelectContent>
               </Select>
             </div>
@@ -307,9 +358,15 @@ export default function Products() {
                 <SlidersHorizontal className="w-3.5 h-3.5" /> {t("products.active_filters")}:
               </span>
               <div className="flex flex-wrap gap-2">
-                {state.category && (
-                  <button onClick={() => update({ category: "" })} className="px-3 py-1 bg-primary/5 text-primary text-[10px] font-black rounded-full flex items-center gap-1.5 hover:bg-primary/10 transition-colors">
-                    {state.category} <X className="w-3 h-3" />
+                {(activeCategoryId || state.category) && (
+                  <button
+                    onClick={() => update({ categoryId: null, category: "" })}
+                    className="px-3 py-1 bg-primary/5 text-primary text-[10px] font-black rounded-full flex items-center gap-1.5 hover:bg-primary/10 transition-colors"
+                  >
+                    {activeCategoryId
+                      ? categoryName(activeCategoryId) || state.category || t("products.uncategorized")
+                      : state.category}{" "}
+                    <X className="w-3 h-3" />
                   </button>
                 )}
                 {state.search && (
