@@ -139,19 +139,22 @@ with DDL rights against the live database, and TLS is on by default because
 sudo -u postgres psql -d bb_market -c '\dt'
 ```
 
-Expect 11 tables (six migrations, `0000`–`0005`):
+Expect 14 tables (eleven migrations, `0000`–`0010`):
 
 | table | added by |
 | --- | --- |
 | `products`, `messages`, `users`, `promos`, `sticker_catalogs`, `settings`, `categories`, `orders`, `social_media_embeds`, `user_activities` | `0000_initial_schema` |
 | `wishlist` | `0004_wishlist` |
+| `homepage_sections` | `0006_homepage_sections` |
+| `notifications` | `0008_notifications` |
+| `session` | `0009_session` |
 
 Confirm the journal matches the migrations on disk — a partial apply is the failure
 mode worth catching here:
 
 ```bash
 sudo -u postgres psql -d bb_market -c 'select count(*) from drizzle.__drizzle_migrations'
-# expect 6
+# expect 11
 ```
 
 A count of `0` means the migration ran against the throwaway SQLite file instead

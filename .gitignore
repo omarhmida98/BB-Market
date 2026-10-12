@@ -25,3 +25,20 @@ server/security_rt_uploads/
 # Database and upload backups written by `npm run db:reset-data`. They hold
 # password hashes and customer details, so they never belong in the repository.
 server/backups/
+
+# Local SQLite databases, their WAL/journal sidecars and dated backups. These
+# hold user rows (password hashes) and are dev/runtime state, never source — the
+# app runs on PostgreSQL in production and schema lives in server/migrations/*.sql
+# (which are .sql, not .db, so none of these patterns touch them).
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+server/*.db
+server/*.db.backup-*
+*.db.backup-*
+
+# Uploaded product images. These are runtime user content (served at /uploads),
+# not source; production stores them in Cloudinary. The directory is recreated on
+# startup, so ignoring it cannot break the app.
+public/uploads/
