@@ -1,0 +1,24 @@
+# Keep the build context small and never bake local state / secrets into images.
+# Each image installs its own deps and builds from source, so host node_modules
+# and dist are never needed in the context.
+**/node_modules
+**/dist
+.git
+.github
+
+# Local databases, SQLite sidecars and dated backups (never needed in an image).
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.db.backup-*
+
+# Secrets / env files. .env.prod is read by docker compose at RUNTIME from the
+# host (env_file:), not from the image, so it must not enter the build context.
+.env
+.env.*
+
+# Runtime user content and build noise.
+public/uploads
+*.log
+.DS_Store

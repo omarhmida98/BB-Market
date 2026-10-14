@@ -1,50 +1,111 @@
+# =============================================================================
+# B&B Market - full stack (database + backend API + frontend SPA)
+# =============================================================================
+# Bring the whole stack up:
+#     docker compose up -d --build
+# Watch it become healthy:
+#     docker compose ps        (or: docker ps)
+#
+# Expected end state:
+#   bb_db        healthy
+#   bb_backend   healthy   (waits for db healthy AND migrations finished)
+#   bb_frontend  up        (serves the SPA, proxies /api -> backend)
+#   bb_migrate   exited 0  (one-shot: applies the 11 Drizzle migrations)
+#
+# Secrets (SESSION_SECRET, GOOGLE_CLIENT_ID, SMTP_*, CLOUDINARY_*, B2_*) come
+# from .env.prod at runtime. The database connection, port and bind address are
+# fixed here so they cannot disagree with the compose network.
+# =============================================================================
+
 services:
   db:
     image: postgres:15
-    container_name: sred_postgres
+    container_name: bb_db
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: sred_showcase
+      POSTGRES_USER: bbmarket
+      POSTGRES_PASSWORD: bbmarket_local_pw   # internal-only; db is never published to the host
+      POSTGRES_DB: bb_market
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d sred_showcase"]
+      test: ["CMD-SHELL", "pg_isready -U bbmarket -d bb_market"]
       interval: 5s
       timeout: 5s
       retries: 20
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     restart: unless-stopped
+
+  # One-shot: applies migrations/pg/0000..0010 then exits. Backend waits for it.
+  migrate:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: bb-market-backend
+    container_name: bb_migrate
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://bbmarket:bbmarket_local_pw@db:5432/bb_market
+      DATABASE_SSL: "false"
+    command: ["node", "dist/server/scripts/migrate.js"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
 
   backend:
     build:
       context: .
       dockerfile: server/Dockerfile
-    container_name: sred_server
+    image: bb-market-backend
+    container_name: bb_backend
     env_file:
-      - .env.prod
+      - .env.prod            # secrets only; the vars below override anything in it
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://bbmarket:bbmarket_local_pw@db:5432/bb_market
+      DATABASE_SSL: "false"
+      PORT: "3000"
+      HOST: "0.0.0.0"        # MUST be 0.0.0.0 so the frontend container can reach it
+      UPLOADS_DIR: /app/uploads
     volumes:
+      - uploads:/app/uploads
       - ./attached_assets:/app/attached_assets
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"   # localhost only, for curl/debugging
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   frontend:
     build:
       context: .
       dockerfile: client/Dockerfile
-    container_name: sred_client
-    depends_on:
-      - backend
+      args:
+        # Inlined into the JS bundle at build time (Vite). Public value.
+        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
+    container_name: bb_frontend
     ports:
-      - "8080:80"
+      # Host nginx terminates TLS and proxies here. Override the host port with
+      # FRONTEND_PORT if 8080 is taken (e.g. by another container).
+      - "127.0.0.1:${FRONTEND_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    depends_on:
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
-# Named volumes
 volumes:
   pgdata: {}
-  # db-data: {}
-  # assets-data: {}
+  uploads: {}
